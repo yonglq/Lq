@@ -14,8 +14,11 @@ import {
 import type { UserLevel } from './server/authCrypto.ts';
 import {
   EMAIL_DELIVERY_ERROR_MESSAGE,
+  formatEmailErrorForClient,
+  getMissingEmailConfigReason,
   isEmailDeliveryConfigured,
   sendVerificationCodeEmail,
+  verifyEmailProviderHealth,
 } from './server/emailService.ts';
 import { otpStore } from './server/otpStore.ts';
 import type { OtpPurpose } from './server/otpStore.ts';
@@ -126,6 +129,21 @@ async function startServer() {
     });
   });
 
+  // Dev / Test-only endpoint to verify SMTP (transporter.verify) or Resend API connectivity
+  app.get('/api/auth/email-health', async (_req: Request, res: Response) => {
+    if (!isTestResetEnabled()) {
+      res.status(403).json({
+        error: 'Email health diagnostics are disabled in production mode.',
+      });
+      return;
+    }
+
+    const health = await verifyEmailProviderHealth();
+    res.status(health.ok ? 200 : health.provider === 'none' ? 500 : 502).json(
+      health
+    );
+  });
+
   // Dev / Test-only endpoint to reset a specific test email for repeated OTP + Sign Up testing
   app.delete('/api/auth/test-reset', (req: Request, res: Response) => {
     if (!isTestResetEnabled()) {
@@ -187,7 +205,11 @@ async function startServer() {
       }
 
       if (!isEmailDeliveryConfigured()) {
-        res.status(500).json({ error: EMAIL_DELIVERY_ERROR_MESSAGE });
+        res.status(500).json({
+          error: isTestResetEnabled()
+            ? getMissingEmailConfigReason()
+            : EMAIL_DELIVERY_ERROR_MESSAGE,
+        });
         return;
       }
 
@@ -213,10 +235,12 @@ async function startServer() {
           code: plainCode,
           purpose: purpose as OtpPurpose,
         });
-      } catch {
+      } catch (err) {
         // Remove unused OTP if email failed to send
         otpStore.clearForEmail(normalized);
-        res.status(502).json({ error: EMAIL_DELIVERY_ERROR_MESSAGE });
+        res.status(502).json({
+          error: formatEmailErrorForClient(err, isTestResetEnabled()),
+        });
         return;
       }
 
@@ -225,8 +249,10 @@ async function startServer() {
           'A 6-digit verification code has been sent to your email. It expires in 10 minutes.',
         expiresAt,
       });
-    } catch {
-      res.status(500).json({ error: EMAIL_DELIVERY_ERROR_MESSAGE });
+    } catch (err) {
+      res.status(500).json({
+        error: formatEmailErrorForClient(err, isTestResetEnabled()),
+      });
     }
   });
 
