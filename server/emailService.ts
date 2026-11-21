@@ -68,10 +68,18 @@ function getSmtpConfig() {
 function getResendConfig() {
   const apiKey = process.env.RESEND_API_KEY?.trim() ?? '';
   const from =
+    process.env.EMAIL_FROM?.trim() ||
     process.env.RESEND_FROM?.trim() ||
     process.env.SMTP_FROM?.trim() ||
-    'MasBina Security Alarm <onboarding@resend.dev>';
+    'MasBina Security <onboarding@resend.dev>';
   return { apiKey, from };
+}
+
+function validateResendApiKey(apiKey: string): string | null {
+  if (!/^[\x20-\x7E]+$/.test(apiKey) || !apiKey.startsWith('re_')) {
+    return 'Email delivery failed: RESEND_API_KEY must be a valid Resend API key starting with "re_" (replace any placeholder text).';
+  }
+  return null;
 }
 
 export function getMissingEmailConfigReason(): string {
@@ -234,6 +242,14 @@ export async function sendVerificationCodeEmail(params: {
   // 1. Automatically prefer Resend HTTP API if RESEND_API_KEY is configured
   if (isResendConfigured()) {
     const { apiKey, from } = getResendConfig();
+    const keyFormatError = validateResendApiKey(apiKey);
+    if (keyFormatError) {
+      console.error('Resend API key format error:', { reason: keyFormatError });
+      throw new EmailDeliveryError(keyFormatError, {
+        code: 'INVALID_RESEND_KEY_FORMAT',
+      });
+    }
+
     try {
       const response = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -317,6 +333,7 @@ export interface EmailHealthResult {
 export async function verifyEmailProviderHealth(): Promise<EmailHealthResult> {
   const envConfigured = {
     RESEND_API_KEY: Boolean(process.env.RESEND_API_KEY?.trim()),
+    EMAIL_FROM: Boolean(process.env.EMAIL_FROM?.trim()),
     RESEND_FROM: Boolean(process.env.RESEND_FROM?.trim()),
     SMTP_HOST: Boolean(process.env.SMTP_HOST?.trim()),
     SMTP_PORT: process.env.SMTP_PORT?.trim() || '587 (default)',
@@ -327,6 +344,16 @@ export async function verifyEmailProviderHealth(): Promise<EmailHealthResult> {
 
   if (isResendConfigured()) {
     const { apiKey, from } = getResendConfig();
+    const keyFormatError = validateResendApiKey(apiKey);
+    if (keyFormatError) {
+      return {
+        ok: false,
+        provider: 'resend',
+        message: keyFormatError,
+        details: { from, envConfigured },
+      };
+    }
+
     try {
       const response = await fetch('https://api.resend.com/domains', {
         method: 'GET',
