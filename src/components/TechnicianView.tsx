@@ -217,6 +217,24 @@ export function TechnicianView({
 
   const hasAnyInStock = vanItems.some((item) => item.currentQty > 0);
 
+  if (vans.length === 0) {
+    return (
+      <section className="bg-white border border-slate-200 rounded-xl p-10 text-center space-y-2">
+        <Truck
+          className="w-9 h-9 text-slate-300 mx-auto"
+          aria-hidden="true"
+        />
+        <h2 className="text-base font-bold text-slate-900">
+          No service vans registered yet
+        </h2>
+        <p className="text-sm text-slate-500 max-w-md mx-auto">
+          Once a Level 1 Admin or Level 2 Manager adds a service van and assigns
+          its par-level spare parts, you can log field usage here.
+        </p>
+      </section>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Top Van Selector + Readiness Strip */}

@@ -1,4 +1,3 @@
-import { createSeedState } from '../data/seedData';
 import {
   InventoryState,
   TransactionLog,
@@ -6,33 +5,37 @@ import {
   VanInventoryItem,
 } from '../types/inventory';
 
-const STORAGE_KEY = 'vanspare_sync_state_v1';
+const STORAGE_KEY = 'vanspare_sync_state_v2';
+
+export function createEmptyInventoryState(): InventoryState {
+  return {
+    vans: [],
+    inventory: [],
+    logs: [],
+  };
+}
 
 export interface InventoryRepository {
   load(): InventoryState;
   save(state: InventoryState): void;
-  reset(): InventoryState;
+  clear(): InventoryState;
 }
 
 /**
- * LocalStorage-backed inventory repository.
- * Isolated behind a small interface so it can be swapped with Firestore or Supabase later.
+ * LocalStorage-backed inventory repository starting completely clean with zero sample data.
  */
 export const localInventoryRepository: InventoryRepository = {
   load(): InventoryState {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) {
-        const seed = createSeedState();
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(seed));
-        return seed;
+        return createEmptyInventoryState();
       }
       const parsed = JSON.parse(raw) as Partial<InventoryState>;
       if (
         Array.isArray(parsed.vans) &&
         Array.isArray(parsed.inventory) &&
-        Array.isArray(parsed.logs) &&
-        parsed.vans.length > 0
+        Array.isArray(parsed.logs)
       ) {
         return {
           vans: parsed.vans,
@@ -41,11 +44,9 @@ export const localInventoryRepository: InventoryRepository = {
         };
       }
     } catch {
-      // Fallback to fresh seed data if storage is unavailable or corrupted
+      // Fallback to clean empty state if storage is unavailable or corrupted
     }
-    const seed = createSeedState();
-    this.save(seed);
-    return seed;
+    return createEmptyInventoryState();
   },
 
   save(state: InventoryState): void {
@@ -56,10 +57,10 @@ export const localInventoryRepository: InventoryRepository = {
     }
   },
 
-  reset(): InventoryState {
-    const seed = createSeedState();
-    this.save(seed);
-    return seed;
+  clear(): InventoryState {
+    const empty = createEmptyInventoryState();
+    this.save(empty);
+    return empty;
   },
 };
 
@@ -184,7 +185,6 @@ export function restockPartInState(
   );
   const reachedPar = nextCurrentQty === item.targetQty;
 
-  // Match open claims chronologically (oldest first)
   const matchingPendingLogs = state.logs
     .filter(
       (log) =>
@@ -212,11 +212,9 @@ export function restockPartInState(
         referencedClaims.push(log);
         remainingUnits -= log.qty;
       } else {
-        // Strict FIFO: stop before jumping over an older unfulfilled claim
         break;
       }
     }
-    // If a partial restock is smaller than the oldest claim, still cite the oldest open claim for audit context
     if (referencedClaims.length === 0 && matchingPendingLogs[0]) {
       referencedClaims.push(matchingPendingLogs[0]);
     }

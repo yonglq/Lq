@@ -7,8 +7,8 @@ import {
   Trash2,
   Truck,
 } from 'lucide-react';
-import { PART_CATEGORIES } from '../../data/seedData';
 import {
+  PART_CATEGORIES,
   Van,
   VanInventoryItem,
   getStockBadgeStyle,
@@ -213,6 +213,7 @@ export function ParLevelConfigSection({
 
             <button
               type="button"
+              disabled={vans.length === 0}
               onClick={() => {
                 setShowAddPartForm((prev) => {
                   const next = !prev;
@@ -221,7 +222,7 @@ export function ParLevelConfigSection({
                 });
                 setShowAddVanForm(false);
               }}
-              className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors whitespace-nowrap shrink-0 disabled:opacity-45 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
             >
               <PackagePlus className="w-4 h-4" />
               <span>
@@ -232,38 +233,40 @@ export function ParLevelConfigSection({
         </div>
 
         {/* Van Selector Tabs */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1">
-          {vans.map((van) => {
-            const isSelected = van.id === configVanId;
-            const items = inventory.filter((i) => i.vanId === van.id);
-            const readiness = getVanReadiness(items);
-            return (
-              <button
-                key={van.id}
-                type="button"
-                onClick={() => {
-                  setConfigVanId(van.id);
-                  setConfirmRemovePartId(null);
-                  setPartFormError(null);
-                }}
-                className={`min-h-[44px] px-4 py-2 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap shrink-0 flex items-center gap-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
-                  isSelected
-                    ? 'bg-slate-900 text-white border-slate-900'
-                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                }`}
-              >
-                <span>{van.name}</span>
-                <span
-                  className={`text-xs font-mono tabular-nums ${
-                    isSelected ? 'text-slate-300' : 'text-slate-500'
+        {vans.length > 0 && (
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            {vans.map((van) => {
+              const isSelected = van.id === configVanId;
+              const items = inventory.filter((i) => i.vanId === van.id);
+              const readiness = getVanReadiness(items);
+              return (
+                <button
+                  key={van.id}
+                  type="button"
+                  onClick={() => {
+                    setConfigVanId(van.id);
+                    setConfirmRemovePartId(null);
+                    setPartFormError(null);
+                  }}
+                  className={`min-h-[44px] px-4 py-2 rounded-lg text-sm font-semibold border transition-colors whitespace-nowrap shrink-0 flex items-center gap-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
+                    isSelected
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                   }`}
                 >
-                  {readiness.percentage}%
-                </span>
-              </button>
-            );
-          })}
-        </div>
+                  <span>{van.name}</span>
+                  <span
+                    className={`text-xs font-mono tabular-nums ${
+                      isSelected ? 'text-slate-300' : 'text-slate-500'
+                    }`}
+                  >
+                    {readiness.percentage}%
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Inline Form: Add New Van */}
         {showAddVanForm && (
@@ -467,13 +470,22 @@ export function ParLevelConfigSection({
       </div>
 
       {/* Selected Van Parts List */}
-      {configVanItems.length === 0 ? (
+      {vans.length === 0 ? (
+        <div className="p-8 text-center">
+          <p className="text-sm font-semibold text-slate-700">
+            No service vans registered yet
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            Click &ldquo;Add New Van&rdquo; above to register your first service van and configure its standard par load.
+          </p>
+        </div>
+      ) : configVanItems.length === 0 ? (
         <div className="p-8 text-center">
           <p className="text-sm font-semibold text-slate-700">
             No spare parts configured for {configVan?.name} yet
           </p>
           <p className="text-xs text-slate-500 mt-1">
-            Click "Add Spare Part" above to set up this van's standard par load.
+            Click &ldquo;Add Spare Part&rdquo; above to set up this van&rsquo;s standard par load.
           </p>
         </div>
       ) : (

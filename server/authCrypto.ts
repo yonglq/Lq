@@ -3,17 +3,52 @@ import { promisify } from 'node:util';
 
 const scryptAsync = promisify(crypto.scrypt);
 
+export type UserLevel = 1 | 2 | 3;
 export type UserRole = 'admin' | 'manager' | 'technician';
 
-export const VALID_ROLES: readonly UserRole[] = [
-  'admin',
-  'manager',
-  'technician',
-] as const;
+export const VALID_LEVELS: readonly UserLevel[] = [1, 2, 3] as const;
+
+// Minimum 8 chars, at least one letter, one number, and one symbol
+export const PASSWORD_REGEX =
+  /^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+
+export const PASSWORD_POLICY_MESSAGE =
+  'Password must be at least 8 characters and include at least one letter, one number, and one symbol.';
+
+export function isStrongPassword(password: string): boolean {
+  return PASSWORD_REGEX.test(password);
+}
+
+export function isValidLevel(level: unknown): level is UserLevel {
+  return level === 1 || level === 2 || level === 3;
+}
+
+export function roleFromLevel(level: UserLevel): UserRole {
+  switch (level) {
+    case 1:
+      return 'admin';
+    case 2:
+      return 'manager';
+    case 3:
+      return 'technician';
+  }
+}
+
+export function levelFromRole(role: UserRole): UserLevel {
+  switch (role) {
+    case 'admin':
+      return 1;
+    case 'manager':
+      return 2;
+    case 'technician':
+      return 3;
+  }
+}
 
 export interface SessionPayload {
   sub: string;
   email: string;
+  level: UserLevel;
   role: UserRole;
   exp: number;
 }
@@ -51,41 +86,29 @@ export async function verifyPassword(
   return crypto.timingSafeEqual(derived, expected);
 }
 
-export function timingSafeSecretEquals(a: string, b: string): boolean {
-  const digestA = crypto.createHash('sha256').update(a).digest();
-  const digestB = crypto.createHash('sha256').update(b).digest();
-  return crypto.timingSafeEqual(digestA, digestB);
+export function generateNumericOtp(): string {
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
-export function generateResetToken(): {
-  plainToken: string;
-  tokenHash: string;
-  expiresAt: string;
-} {
-  const plainToken = crypto.randomBytes(24).toString('base64url');
-  const tokenHash = hashResetToken(plainToken);
-  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-  return { plainToken, tokenHash, expiresAt };
+export function hashOtp(code: string): string {
+  return crypto.createHash('sha256').update(code.trim()).digest('hex');
 }
 
-export function hashResetToken(token: string): string {
-  return crypto.createHash('sha256').update(token).digest('hex');
-}
-
-export function verifyResetToken(token: string, storedHash: string): boolean {
-  const computed = Buffer.from(hashResetToken(token), 'hex');
+export function verifyOtpHash(code: string, storedHash: string): boolean {
+  const computed = Buffer.from(hashOtp(code), 'hex');
   const expected = Buffer.from(storedHash, 'hex');
   if (computed.length !== expected.length) return false;
   return crypto.timingSafeEqual(computed, expected);
 }
 
 export function signSessionToken(
-  user: { id: string; email: string; role: UserRole },
+  user: { id: string; email: string; level: UserLevel; role: UserRole },
   ttlMs = 8 * 60 * 60 * 1000
 ): string {
   const payload: SessionPayload = {
     sub: user.id,
     email: user.email,
+    level: user.level,
     role: user.role,
     exp: Date.now() + ttlMs,
   };
@@ -129,7 +152,7 @@ export function verifySessionToken(token: string): SessionPayload | null {
     if (
       typeof parsed.sub !== 'string' ||
       typeof parsed.email !== 'string' ||
-      !VALID_ROLES.includes(parsed.role as UserRole) ||
+      !isValidLevel(parsed.level) ||
       typeof parsed.exp !== 'number'
     ) {
       return null;
@@ -139,7 +162,13 @@ export function verifySessionToken(token: string): SessionPayload | null {
       return null;
     }
 
-    return parsed as SessionPayload;
+    return {
+      sub: parsed.sub,
+      email: parsed.email,
+      level: parsed.level,
+      role: roleFromLevel(parsed.level),
+      exp: parsed.exp,
+    };
   } catch {
     return null;
   }

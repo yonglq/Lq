@@ -3,18 +3,20 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import path from 'node:path';
 import {
-  generateResetToken,
+  PASSWORD_POLICY_MESSAGE,
   hashPassword,
+  isStrongPassword,
+  isValidLevel,
   signSessionToken,
-  timingSafeSecretEquals,
   verifyPassword,
-  verifyResetToken,
   verifySessionToken,
 } from './server/authCrypto.ts';
-import type { UserRole } from './server/authCrypto.ts';
+import type { UserLevel } from './server/authCrypto.ts';
+import { sendVerificationCodeEmail } from './server/emailService.ts';
+import { otpStore } from './server/otpStore.ts';
+import type { OtpPurpose } from './server/otpStore.ts';
 import {
   isValidEmail,
-  isValidRole,
   normalizeEmail,
   toPublicUser,
   userStore,
@@ -26,10 +28,9 @@ interface AuthenticatedRequest extends Request {
 }
 
 const PORT = Number(process.env.PORT) || 3000;
-const MIN_PASSWORD_LENGTH = 8;
 
-function getConfiguredBootstrapPasscode(): string {
-  return process.env.ADMIN_BOOTSTRAP_PASSCODE?.trim() ?? '';
+function getFirstAdminEmail(): string {
+  return process.env.FIRST_ADMIN_EMAIL?.trim().toLowerCase() ?? '';
 }
 
 function requireAuth(
@@ -46,7 +47,9 @@ function requireAuth(
   const token = header.slice('Bearer '.length).trim();
   const payload = verifySessionToken(token);
   if (!payload) {
-    res.status(401).json({ error: 'Session expired or invalid. Sign in again.' });
+    res
+      .status(401)
+      .json({ error: 'Session expired or invalid. Please sign in again.' });
     return;
   }
 
@@ -60,16 +63,16 @@ function requireAuth(
   next();
 }
 
-function requireRoles(...allowed: UserRole[]) {
+function requireLevel(...allowedLevels: UserLevel[]) {
   return (
     req: AuthenticatedRequest,
     res: Response,
     next: NextFunction
   ): void => {
-    if (!req.authUser || !allowed.includes(req.authUser.role)) {
-      res
-        .status(403)
-        .json({ error: 'You do not have permission to perform this action.' });
+    if (!req.authUser || !allowedLevels.includes(req.authUser.level)) {
+      res.status(403).json({
+        error: 'Forbidden: Your user level does not have access to this resource.',
+      });
       return;
     }
     next();
@@ -80,89 +83,75 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '16kb' }));
 
-  // Auth status (whether first-run Admin setup is open)
-  app.get('/api/auth/status', (_req: Request, res: Response) => {
-    const configuredPasscode = getConfiguredBootstrapPasscode();
-    res.json({
-      needsAdminSetup: !userStore.hasAnyAdmin(),
-      bootstrapPasscodeConfigured: configuredPasscode.length > 0,
-    });
-  });
-
-  // One-time initial Admin claim / setup
-  app.post('/api/auth/setup', async (req: Request, res: Response) => {
+  // Send 6-digit email verification code for Sign Up or Forgot Password
+  app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
     try {
-      if (userStore.hasAnyAdmin()) {
+      const { email, purpose } = req.body ?? {};
+      if (typeof email !== 'string' || !isValidEmail(email)) {
+        res.status(400).json({ error: 'Enter a valid email address.' });
+        return;
+      }
+
+      if (purpose !== 'signup' && purpose !== 'reset') {
+        res.status(400).json({ error: 'Invalid verification purpose.' });
+        return;
+      }
+
+      const normalized = normalizeEmail(email);
+      const existing = userStore.findByEmail(normalized);
+
+      if (purpose === 'signup' && existing) {
         res.status(409).json({
-          error: 'Initial admin account has already been configured. Please sign in.',
+          error: 'An account with this email already exists. Please sign in.',
         });
         return;
       }
 
-      const { email, password, full_name, bootstrapPasscode } = req.body ?? {};
-      const configuredPasscode = getConfiguredBootstrapPasscode();
-      if (configuredPasscode.length > 0) {
-        if (
-          typeof bootstrapPasscode !== 'string' ||
-          !timingSafeSecretEquals(bootstrapPasscode.trim(), configuredPasscode)
-        ) {
-          res.status(403).json({
-            error: 'Invalid admin bootstrap passcode.',
+      if (purpose === 'reset') {
+        // Avoid enumerating accounts when SMTP is configured in production
+        if (!existing || !existing.is_active) {
+          res.json({
+            message:
+              'If an active account exists for this email, a 6-digit verification code has been sent.',
           });
           return;
         }
       }
 
-      if (typeof email !== 'string' || !isValidEmail(email)) {
-        res.status(400).json({ error: 'Enter a valid email address.' });
-        return;
-      }
-      if (
-        typeof full_name !== 'string' ||
-        full_name.trim().length < 2 ||
-        full_name.trim().length > 150
-      ) {
-        res
-          .status(400)
-          .json({ error: 'Full name must be between 2 and 150 characters.' });
-        return;
-      }
-      if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
-        res.status(400).json({
-          error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-        });
-        return;
-      }
+      const { plainCode, expiresAt } = otpStore.issue(
+        normalized,
+        purpose as OtpPurpose
+      );
 
-      const passwordHash = await hashPassword(password);
-      const created = userStore.create({
-        email,
-        password_hash: passwordHash,
-        full_name,
-        role: 'admin',
-        is_active: true,
+      const delivery = await sendVerificationCodeEmail({
+        to: normalized,
+        code: plainCode,
+        purpose: purpose as OtpPurpose,
       });
 
-      const token = signSessionToken(created);
-      res.status(201).json({ token, user: toPublicUser(created) });
+      res.json({
+        message:
+          delivery.deliveredVia === 'smtp'
+            ? 'A 6-digit verification code has been sent to your email. It expires in 10 minutes.'
+            : 'Verification code generated (expires in 10 minutes). Configure SMTP_* secrets for live email delivery.',
+        expiresAt,
+        ...(delivery.previewCode ? { previewCode: delivery.previewCode } : {}),
+      });
     } catch (err) {
-      if (err instanceof Error && err.message === 'DUPLICATE_EMAIL') {
-        res.status(409).json({ error: 'An account with this email already exists.' });
-        return;
-      }
-      res.status(500).json({ error: 'Unable to complete initial admin setup.' });
+      res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Unable to send verification code right now.',
+      });
     }
   });
 
-  // Public Technician self-registration (strictly enforces role = 'technician')
-  app.post('/api/auth/register', async (req: Request, res: Response) => {
+  // Complete Sign Up with verified 6-digit OTP and strict password validation
+  app.post('/api/auth/signup', async (req: Request, res: Response) => {
     try {
-      const { email, password, full_name } = req.body ?? {};
+      const { full_name, email, otp, password } = req.body ?? {};
 
-      if (typeof email !== 'string' || !isValidEmail(email)) {
-        res.status(400).json({ error: 'Enter a valid email address.' });
-        return;
-      }
       if (
         typeof full_name !== 'string' ||
         full_name.trim().length < 2 ||
@@ -173,19 +162,53 @@ async function startServer() {
           .json({ error: 'Full name must be between 2 and 150 characters.' });
         return;
       }
-      if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+
+      if (typeof email !== 'string' || !isValidEmail(email)) {
+        res.status(400).json({ error: 'Enter a valid email address.' });
+        return;
+      }
+
+      if (typeof password !== 'string' || !isStrongPassword(password)) {
+        res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
+        return;
+      }
+
+      if (typeof otp !== 'string') {
         res.status(400).json({
-          error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+          error: 'Enter the 6-digit email verification code.',
         });
         return;
       }
 
+      const normalized = normalizeEmail(email);
+      if (userStore.findByEmail(normalized)) {
+        res.status(409).json({
+          error: 'An account with this email already exists. Please sign in.',
+        });
+        return;
+      }
+
+      const otpCheck = otpStore.verifyAndConsume(normalized, 'signup', otp);
+      if (!otpCheck.ok) {
+        res.status(400).json({ error: otpCheck.error });
+        return;
+      }
+
+      // Default Level 3 (Technician); promote to Level 1 (Admin) ONLY if email matches FIRST_ADMIN_EMAIL and no Admin exists yet
+      const firstAdminEmail = getFirstAdminEmail();
+      const assignedLevel: UserLevel =
+        firstAdminEmail.length > 0 &&
+        normalized === firstAdminEmail &&
+        !userStore.hasAnyAdmin()
+          ? 1
+          : 3;
+
       const passwordHash = await hashPassword(password);
       const created = userStore.create({
-        email,
+        email: normalized,
         password_hash: passwordHash,
-        full_name,
-        role: 'technician',
+        full_name: full_name.trim(),
+        level: assignedLevel,
         is_active: true,
       });
 
@@ -193,14 +216,16 @@ async function startServer() {
       res.status(201).json({ token, user: toPublicUser(created) });
     } catch (err) {
       if (err instanceof Error && err.message === 'DUPLICATE_EMAIL') {
-        res.status(409).json({ error: 'An account with this email already exists.' });
+        res
+          .status(409)
+          .json({ error: 'An account with this email already exists.' });
         return;
       }
-      res.status(500).json({ error: 'Unable to create technician account.' });
+      res.status(500).json({ error: 'Unable to complete sign up.' });
     }
   });
 
-  // Email + password login
+  // Email + Password Login
   app.post('/api/auth/login', async (req: Request, res: Response) => {
     try {
       const { email, password } = req.body ?? {};
@@ -215,14 +240,8 @@ async function startServer() {
         return;
       }
 
-      const configuredPasscode = getConfiguredBootstrapPasscode();
-      const matchesPassword = await verifyPassword(password, user.password_hash);
-      const matchesAdminOverride =
-        user.role === 'admin' &&
-        configuredPasscode.length > 0 &&
-        timingSafeSecretEquals(password, configuredPasscode);
-
-      if (!matchesPassword && !matchesAdminOverride) {
+      const valid = await verifyPassword(password, user.password_hash);
+      if (!valid) {
         res.status(401).json({ error: 'Invalid email or password.' });
         return;
       }
@@ -241,7 +260,55 @@ async function startServer() {
     }
   });
 
-  // Current authenticated user profile
+  // Complete Password Reset with verified 6-digit OTP and strict password validation
+  app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
+    try {
+      const { email, otp, newPassword } = req.body ?? {};
+
+      if (typeof email !== 'string' || !isValidEmail(email)) {
+        res.status(400).json({ error: 'Enter a valid email address.' });
+        return;
+      }
+
+      if (typeof newPassword !== 'string' || !isStrongPassword(newPassword)) {
+        res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
+        return;
+      }
+
+      if (typeof otp !== 'string') {
+        res
+          .status(400)
+          .json({ error: 'Enter the 6-digit email verification code.' });
+        return;
+      }
+
+      const normalized = normalizeEmail(email);
+      const user = userStore.findByEmail(normalized);
+      if (!user || !user.is_active) {
+        res.status(400).json({
+          error: 'Invalid or expired verification code.',
+        });
+        return;
+      }
+
+      const otpCheck = otpStore.verifyAndConsume(normalized, 'reset', otp);
+      if (!otpCheck.ok) {
+        res.status(400).json({ error: otpCheck.error });
+        return;
+      }
+
+      const passwordHash = await hashPassword(newPassword);
+      userStore.update(user.id, { password_hash: passwordHash });
+
+      res.json({
+        message: 'Password updated successfully. You can now sign in.',
+      });
+    } catch {
+      res.status(500).json({ error: 'Unable to reset password.' });
+    }
+  });
+
+  // Current Authenticated User Profile
   app.get(
     '/api/auth/me',
     requireAuth,
@@ -250,162 +317,24 @@ async function startServer() {
     }
   );
 
-  // Unauthenticated forgot-password request (never leaks token or account existence)
-  app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
-    const { email } = req.body ?? {};
-    if (typeof email === 'string' && isValidEmail(email)) {
-      const user = userStore.findByEmail(email);
-      if (user && user.is_active) {
-        const { tokenHash, expiresAt } = generateResetToken();
-        userStore.update(user.id, {
-          reset_token_hash: tokenHash,
-          reset_token_expires_at: expiresAt,
-        });
-      }
-    }
-    res.json({
-      message:
-        'If an active account matches that email, a reset request has been logged. Ask an Admin to issue your one-time reset token if email delivery is not configured.',
-    });
-  });
+  // =========================================================================
+  // LEVEL 1 (ADMIN) EXCLUSIVE USER MANAGEMENT ROUTES
+  // Level 2 (Manager) and Level 3 (Technician) receive 403 Forbidden.
+  // =========================================================================
 
-  // Complete password reset using one-time token verified against reset_token_hash
-  app.post('/api/auth/reset-password', async (req: Request, res: Response) => {
-    try {
-      const { email, token, newPassword } = req.body ?? {};
-      if (
-        typeof email !== 'string' ||
-        !isValidEmail(email) ||
-        typeof token !== 'string' ||
-        !token.trim()
-      ) {
-        res.status(400).json({ error: 'Email and reset token are required.' });
-        return;
-      }
-      if (
-        typeof newPassword !== 'string' ||
-        newPassword.length < MIN_PASSWORD_LENGTH
-      ) {
-        res.status(400).json({
-          error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-        });
-        return;
-      }
-
-      const user = userStore.findByEmail(email);
-      if (
-        !user ||
-        !user.is_active ||
-        !user.reset_token_hash ||
-        !user.reset_token_expires_at
-      ) {
-        res.status(400).json({ error: 'Invalid or expired reset token.' });
-        return;
-      }
-
-      const expiresAtMs = new Date(user.reset_token_expires_at).getTime();
-      if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
-        userStore.update(user.id, {
-          reset_token_hash: null,
-          reset_token_expires_at: null,
-        });
-        res.status(400).json({ error: 'Reset token has expired.' });
-        return;
-      }
-
-      if (!verifyResetToken(token.trim(), user.reset_token_hash)) {
-        res.status(400).json({ error: 'Invalid or expired reset token.' });
-        return;
-      }
-
-      const passwordHash = await hashPassword(newPassword);
-      userStore.update(user.id, {
-        password_hash: passwordHash,
-        reset_token_hash: null,
-        reset_token_expires_at: null,
-      });
-
-      res.json({ message: 'Password updated. You can now sign in.' });
-    } catch {
-      res.status(500).json({ error: 'Unable to reset password.' });
-    }
-  });
-
-  // List users (Admin & Manager read access)
   app.get(
     '/api/users',
     requireAuth,
-    requireRoles('admin', 'manager'),
+    requireLevel(1),
     (_req: AuthenticatedRequest, res: Response) => {
       res.json({ users: userStore.list().map(toPublicUser) });
     }
   );
 
-  // Admin: create user with any valid role
-  app.post(
-    '/api/users',
-    requireAuth,
-    requireRoles('admin'),
-    async (req: AuthenticatedRequest, res: Response) => {
-      try {
-        const { email, password, full_name, role } = req.body ?? {};
-        if (typeof email !== 'string' || !isValidEmail(email)) {
-          res.status(400).json({ error: 'Enter a valid email address.' });
-          return;
-        }
-        if (
-          typeof full_name !== 'string' ||
-          full_name.trim().length < 2 ||
-          full_name.trim().length > 150
-        ) {
-          res
-            .status(400)
-            .json({ error: 'Full name must be between 2 and 150 characters.' });
-          return;
-        }
-        if (!isValidRole(role)) {
-          res.status(400).json({
-            error: "Role must be 'admin', 'manager', or 'technician'.",
-          });
-          return;
-        }
-        if (
-          typeof password !== 'string' ||
-          password.length < MIN_PASSWORD_LENGTH
-        ) {
-          res.status(400).json({
-            error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
-          });
-          return;
-        }
-
-        const passwordHash = await hashPassword(password);
-        const created = userStore.create({
-          email,
-          password_hash: passwordHash,
-          full_name,
-          role,
-          is_active: true,
-        });
-
-        res.status(201).json({ user: toPublicUser(created) });
-      } catch (err) {
-        if (err instanceof Error && err.message === 'DUPLICATE_EMAIL') {
-          res
-            .status(409)
-            .json({ error: 'An account with this email already exists.' });
-          return;
-        }
-        res.status(500).json({ error: 'Unable to create user.' });
-      }
-    }
-  );
-
-  // Admin: update user role, name, or active status
   app.patch(
     '/api/users/:id',
     requireAuth,
-    requireRoles('admin'),
+    requireLevel(1),
     (req: AuthenticatedRequest, res: Response) => {
       const target = userStore.findById(req.params.id);
       if (!target) {
@@ -413,10 +342,10 @@ async function startServer() {
         return;
       }
 
-      const { full_name, role, is_active } = req.body ?? {};
-      if (role !== undefined && !isValidRole(role)) {
+      const { level, is_active, full_name } = req.body ?? {};
+      if (level !== undefined && !isValidLevel(level)) {
         res.status(400).json({
-          error: "Role must be 'admin', 'manager', or 'technician'.",
+          error: 'User level must be 1 (Admin), 2 (Manager), or 3 (Technician).',
         });
         return;
       }
@@ -425,17 +354,17 @@ async function startServer() {
         return;
       }
 
-      const nextRole: UserRole = role ?? target.role;
+      const nextLevel: UserLevel = level ?? target.level;
       const nextActive: boolean = is_active ?? target.is_active;
 
-      const removingAdminPrivilege =
-        target.role === 'admin' &&
+      const removingAdminAccess =
+        target.level === 1 &&
         target.is_active &&
-        (nextRole !== 'admin' || !nextActive);
+        (nextLevel !== 1 || !nextActive);
 
-      if (removingAdminPrivilege && userStore.countActiveAdmins() <= 1) {
+      if (removingAdminAccess && userStore.countActiveAdmins() <= 1) {
         res.status(400).json({
-          error: 'At least one active admin account is required.',
+          error: 'At least one active Level 1 Admin account must remain.',
         });
         return;
       }
@@ -443,24 +372,23 @@ async function startServer() {
       try {
         const updated = userStore.update(target.id, {
           full_name: typeof full_name === 'string' ? full_name : undefined,
-          role: nextRole,
+          level: nextLevel,
           is_active: nextActive,
         });
         res.json({ user: toPublicUser(updated as UserRecord) });
       } catch (err) {
         res.status(400).json({
           error:
-            err instanceof Error ? err.message : 'Unable to update user record.',
+            err instanceof Error ? err.message : 'Unable to update user account.',
         });
       }
     }
   );
 
-  // Admin: issue a one-time password reset token (stores only SHA-256 hash + 30m expiry)
-  app.post(
-    '/api/users/:id/reset-token',
+  app.delete(
+    '/api/users/:id',
     requireAuth,
-    requireRoles('admin'),
+    requireLevel(1),
     (req: AuthenticatedRequest, res: Response) => {
       const target = userStore.findById(req.params.id);
       if (!target) {
@@ -468,17 +396,26 @@ async function startServer() {
         return;
       }
 
-      const { plainToken, tokenHash, expiresAt } = generateResetToken();
-      const updated = userStore.update(target.id, {
-        reset_token_hash: tokenHash,
-        reset_token_expires_at: expiresAt,
-      });
+      if (req.authUser && target.id === req.authUser.id) {
+        res.status(400).json({
+          error: 'You cannot delete your own active Admin account.',
+        });
+        return;
+      }
 
-      res.json({
-        user: toPublicUser(updated as UserRecord),
-        resetToken: plainToken,
-        expiresAt,
-      });
+      if (
+        target.level === 1 &&
+        target.is_active &&
+        userStore.countActiveAdmins() <= 1
+      ) {
+        res.status(400).json({
+          error: 'Cannot delete the last active Level 1 Admin account.',
+        });
+        return;
+      }
+
+      userStore.remove(target.id);
+      res.json({ deletedId: target.id });
     }
   );
 

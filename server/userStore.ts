@@ -1,18 +1,18 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { UserRole } from './authCrypto.ts';
-import { VALID_ROLES } from './authCrypto.ts';
+import type { UserLevel, UserRole } from './authCrypto.ts';
+import { isValidLevel, levelFromRole, roleFromLevel } from './authCrypto.ts';
 
 export interface UserRecord {
   id: string;
   email: string;
   password_hash: string;
   full_name: string;
+  level: UserLevel;
   role: UserRole;
   is_active: boolean;
-  reset_token_hash: string | null;
-  reset_token_expires_at: string | null;
+  email_verified: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -21,10 +21,10 @@ export interface PublicUser {
   id: string;
   email: string;
   full_name: string;
+  level: UserLevel;
   role: UserRole;
   is_active: boolean;
-  has_pending_reset: boolean;
-  reset_token_expires_at: string | null;
+  email_verified: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -33,21 +33,14 @@ const DATA_DIR = path.resolve(process.cwd(), '.data');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 export function toPublicUser(record: UserRecord): PublicUser {
-  const hasPendingReset =
-    Boolean(record.reset_token_hash) &&
-    Boolean(record.reset_token_expires_at) &&
-    new Date(record.reset_token_expires_at as string).getTime() > Date.now();
-
   return {
     id: record.id,
     email: record.email,
     full_name: record.full_name,
+    level: record.level,
     role: record.role,
     is_active: record.is_active,
-    has_pending_reset: hasPendingReset,
-    reset_token_expires_at: hasPendingReset
-      ? record.reset_token_expires_at
-      : null,
+    email_verified: record.email_verified,
     created_at: record.created_at,
     updated_at: record.updated_at,
   };
@@ -63,8 +56,34 @@ export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
 }
 
-export function isValidRole(role: unknown): role is UserRole {
-  return typeof role === 'string' && VALID_ROLES.includes(role as UserRole);
+function hydrateRecord(raw: Partial<UserRecord>): UserRecord | null {
+  if (
+    typeof raw.id !== 'string' ||
+    typeof raw.email !== 'string' ||
+    typeof raw.password_hash !== 'string' ||
+    typeof raw.full_name !== 'string'
+  ) {
+    return null;
+  }
+
+  const level: UserLevel = isValidLevel(raw.level)
+    ? raw.level
+    : raw.role === 'admin' || raw.role === 'manager' || raw.role === 'technician'
+      ? levelFromRole(raw.role)
+      : 3;
+
+  return {
+    id: raw.id,
+    email: normalizeEmail(raw.email),
+    password_hash: raw.password_hash,
+    full_name: raw.full_name,
+    level,
+    role: roleFromLevel(level),
+    is_active: raw.is_active !== false,
+    email_verified: raw.email_verified !== false,
+    created_at: raw.created_at ?? new Date().toISOString(),
+    updated_at: raw.updated_at ?? new Date().toISOString(),
+  };
 }
 
 function readUsersFromDisk(): UserRecord[] {
@@ -75,7 +94,9 @@ function readUsersFromDisk(): UserRecord[] {
     const raw = fs.readFileSync(USERS_FILE, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed as UserRecord[];
+    return parsed
+      .map((entry) => hydrateRecord(entry as Partial<UserRecord>))
+      .filter((u): u is UserRecord => u !== null);
   } catch {
     return [];
   }
@@ -101,11 +122,11 @@ export const userStore = {
   },
 
   hasAnyAdmin(): boolean {
-    return usersCache.some((u) => u.role === 'admin');
+    return usersCache.some((u) => u.level === 1);
   },
 
   countActiveAdmins(): number {
-    return usersCache.filter((u) => u.role === 'admin' && u.is_active).length;
+    return usersCache.filter((u) => u.level === 1 && u.is_active).length;
   },
 
   findById(id: string): UserRecord | undefined {
@@ -121,7 +142,7 @@ export const userStore = {
     email: string;
     password_hash: string;
     full_name: string;
-    role: UserRole;
+    level: UserLevel;
     is_active?: boolean;
   }): UserRecord {
     const email = normalizeEmail(params.email);
@@ -133,8 +154,8 @@ export const userStore = {
     if (!fullName || fullName.length > 150) {
       throw new Error('Full name must be between 1 and 150 characters.');
     }
-    if (!isValidRole(params.role)) {
-      throw new Error('Invalid role.');
+    if (!isValidLevel(params.level)) {
+      throw new Error('User level must be 1, 2, or 3.');
     }
     if (usersCache.some((u) => u.email === email)) {
       throw new Error('DUPLICATE_EMAIL');
@@ -146,10 +167,10 @@ export const userStore = {
       email,
       password_hash: params.password_hash,
       full_name: fullName,
-      role: params.role,
+      level: params.level,
+      role: roleFromLevel(params.level),
       is_active: params.is_active ?? true,
-      reset_token_hash: null,
-      reset_token_expires_at: null,
+      email_verified: true,
       created_at: now,
       updated_at: now,
     };
@@ -163,11 +184,9 @@ export const userStore = {
     id: string,
     patch: {
       full_name?: string;
-      role?: UserRole;
+      level?: UserLevel;
       is_active?: boolean;
       password_hash?: string;
-      reset_token_hash?: string | null;
-      reset_token_expires_at?: string | null;
     }
   ): UserRecord | null {
     const idx = usersCache.findIndex((u) => u.id === id);
@@ -179,29 +198,31 @@ export const userStore = {
     if (!nextFullName || nextFullName.length > 150) {
       throw new Error('Full name must be between 1 and 150 characters.');
     }
-    if (patch.role !== undefined && !isValidRole(patch.role)) {
-      throw new Error('Invalid role.');
+    if (patch.level !== undefined && !isValidLevel(patch.level)) {
+      throw new Error('User level must be 1, 2, or 3.');
     }
 
+    const nextLevel: UserLevel = patch.level ?? current.level;
     const updated: UserRecord = {
       ...current,
       full_name: nextFullName,
-      role: patch.role ?? current.role,
+      level: nextLevel,
+      role: roleFromLevel(nextLevel),
       is_active: patch.is_active ?? current.is_active,
       password_hash: patch.password_hash ?? current.password_hash,
-      reset_token_hash:
-        patch.reset_token_hash !== undefined
-          ? patch.reset_token_hash
-          : current.reset_token_hash,
-      reset_token_expires_at:
-        patch.reset_token_expires_at !== undefined
-          ? patch.reset_token_expires_at
-          : current.reset_token_expires_at,
       updated_at: new Date().toISOString(),
     };
 
     usersCache = usersCache.map((u) => (u.id === id ? updated : u));
     writeUsersToDisk(usersCache);
     return updated;
+  },
+
+  remove(id: string): boolean {
+    const exists = usersCache.some((u) => u.id === id);
+    if (!exists) return false;
+    usersCache = usersCache.filter((u) => u.id !== id);
+    writeUsersToDisk(usersCache);
+    return true;
   },
 };

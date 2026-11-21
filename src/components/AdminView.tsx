@@ -62,11 +62,14 @@ export function AdminView({
         onAddVan={onAddVan}
       />
       <AuditHistorySection vans={vans} logs={logs} />
-      <UserManagementSection
-        currentUser={currentUser}
-        authToken={authToken}
-        onNotify={onNotify}
-      />
+      {/* Level 1 (Admin) Exclusive User Management Dashboard */}
+      {currentUser.level === 1 && (
+        <UserManagementSection
+          currentUser={currentUser}
+          authToken={authToken}
+          onNotify={onNotify}
+        />
+      )}
     </div>
   );
 }

@@ -2,6 +2,15 @@ export type AppRole = 'technician' | 'admin';
 
 export type StockStatus = 'full' | 'low' | 'empty';
 
+export const PART_CATEGORIES = [
+  'Electrical',
+  'Cooling',
+  'Plumbing',
+  'Mechanical',
+  'Controls',
+  'Consumables',
+] as const;
+
 export interface Van {
   id: string;
   name: string;

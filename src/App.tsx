@@ -4,12 +4,11 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LogOut, RotateCcw, ShieldCheck, Truck, Wrench } from 'lucide-react';
+import { LogOut, ShieldCheck, Truck, Wrench } from 'lucide-react';
 import { AdminView } from './components/AdminView';
 import { AuthScreen } from './components/AuthScreen';
 import { TechnicianView } from './components/TechnicianView';
 import { ToastContainer } from './components/ToastContainer';
-import { authClient } from './services/authClient';
 import {
   addPartToVanInState,
   addVanInState,
@@ -21,11 +20,7 @@ import {
   revertConsumeLogInState,
   updateParLevelInState,
 } from './services/inventoryStore';
-import {
-  AuthSession,
-  AuthStatus,
-  formatUserRole,
-} from './types/auth';
+import { AuthSession, formatUserLevel } from './types/auth';
 import {
   AppRole,
   InventoryState,
@@ -40,51 +35,33 @@ export default function App() {
   );
   // Session token is held strictly in React memory (never persisted to localStorage)
   const [session, setSession] = useState<AuthSession | null>(null);
-  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
-  const [authLoadError, setAuthLoadError] = useState<string | null>(null);
-
   const [roleView, setRoleView] = useState<AppRole>('technician');
   const [selectedVanId, setSelectedVanId] = useState<string>(
-    () => state.vans[0]?.id ?? 'van-01'
+    () => state.vans[0]?.id ?? ''
   );
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [confirmReset, setConfirmReset] = useState<boolean>(false);
 
-  const fetchAuthStatus = useCallback(async () => {
-    setAuthLoadError(null);
-    try {
-      const status = await authClient.getStatus();
-      setAuthStatus(status);
-    } catch {
-      setAuthLoadError('Unable to reach the authentication service.');
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchAuthStatus();
-  }, [fetchAuthStatus]);
-
-  // Persist every inventory transition to localStorage
+  // Persist real inventory entries to localStorage
   useEffect(() => {
     localInventoryRepository.save(state);
   }, [state]);
 
-  // Keep selectedVanId valid if state resets
+  // Keep selectedVanId valid as vans are added
   useEffect(() => {
-    if (!state.vans.some((v) => v.id === selectedVanId) && state.vans[0]) {
-      setSelectedVanId(state.vans[0].id);
+    if (!state.vans.some((v) => v.id === selectedVanId)) {
+      setSelectedVanId(state.vans[0]?.id ?? '');
     }
   }, [state.vans, selectedVanId]);
 
-  const canAccessAdminView =
-    session?.user.role === 'admin' || session?.user.role === 'manager';
+  // Level 1 (Admin) and Level 2 (Manager) can access management dashboard; Level 3 (Technician) is field-only
+  const canAccessManagementView =
+    session?.user.level === 1 || session?.user.level === 2;
 
-  // Enforce RBAC view boundary when user changes
   useEffect(() => {
-    if (!canAccessAdminView && roleView === 'admin') {
+    if (!canAccessManagementView && roleView === 'admin') {
       setRoleView('technician');
     }
-  }, [canAccessAdminView, roleView]);
+  }, [canAccessManagementView, roleView]);
 
   const pushToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
     const id = createEntityId('toast');
@@ -102,14 +79,14 @@ export default function App() {
     (nextSession: AuthSession) => {
       setSession(nextSession);
       setRoleView(
-        nextSession.user.role === 'admin' || nextSession.user.role === 'manager'
+        nextSession.user.level === 1 || nextSession.user.level === 2
           ? 'admin'
           : 'technician'
       );
       pushToast({
         tone: 'success',
         title: `Signed in as ${nextSession.user.full_name}`,
-        description: `Role: ${formatUserRole(nextSession.user.role)}`,
+        description: formatUserLevel(nextSession.user.level),
       });
     },
     [pushToast]
@@ -118,8 +95,7 @@ export default function App() {
   const handleSignOut = useCallback(() => {
     setSession(null);
     setRoleView('technician');
-    fetchAuthStatus();
-  }, [fetchAuthStatus]);
+  }, []);
 
   const totalPendingUnits = useMemo(
     () => state.inventory.reduce((sum, item) => sum + getDeficitQty(item), 0),
@@ -296,60 +272,16 @@ export default function App() {
     [pushToast]
   );
 
-  const handleResetDemoData = useCallback(() => {
-    const fresh = localInventoryRepository.reset();
-    setState(fresh);
-    setSelectedVanId(fresh.vans[0]?.id ?? 'van-01');
-    setConfirmReset(false);
-    pushToast({
-      tone: 'info',
-      title: 'Demo data restored',
-      description: 'Vans, par levels, and pending claims have been reset.',
-    });
-  }, [pushToast]);
-
-  // Render Sign-In / First-Run Admin Setup screen when unauthenticated
   if (!session) {
-    if (authLoadError) {
-      return (
-        <div className="min-h-screen bg-[#F4F6F8] flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-sm w-full text-center space-y-3">
-            <p className="text-sm font-semibold text-slate-900">
-              {authLoadError}
-            </p>
-            <button
-              type="button"
-              onClick={fetchAuthStatus}
-              className="min-h-[44px] px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold"
-            >
-              Retry Connection
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    if (!authStatus) {
-      return (
-        <div className="min-h-screen bg-[#F4F6F8] flex items-center justify-center p-4">
-          <p className="text-sm font-medium text-slate-500">
-            Loading VanSpare Sync...
-          </p>
-        </div>
-      );
-    }
-
     return (
       <>
-        <AuthScreen
-          status={authStatus}
-          onAuthenticated={handleAuthenticated}
-          onRefreshStatus={fetchAuthStatus}
-        />
+        <AuthScreen onAuthenticated={handleAuthenticated} />
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       </>
     );
   }
+
+  const managementLabel = session.user.level === 1 ? 'Admin' : 'Manager';
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F4F6F8] text-slate-900">
@@ -366,10 +298,10 @@ export default function App() {
             </span>
           </div>
 
-          {/* Role Switcher Tabs (Admins & Managers only) */}
-          {canAccessAdminView && (
+          {/* Role Switcher Tabs (Level 1 Admin & Level 2 Manager only) */}
+          {canAccessManagementView && (
             <nav
-              aria-label="Role view switcher"
+              aria-label="Workspace view switcher"
               className="flex items-center p-1 bg-slate-100 rounded-lg border border-slate-200/80 shrink-0"
             >
               <button
@@ -405,7 +337,8 @@ export default function App() {
                   aria-hidden="true"
                 />
                 <span>
-                  Admin<span className="hidden sm:inline"> View</span>
+                  {managementLabel}
+                  <span className="hidden sm:inline"> View</span>
                 </span>
                 {totalPendingUnits > 0 && (
                   <span className="font-mono text-xs text-amber-700 font-bold tabular-nums">
@@ -423,14 +356,14 @@ export default function App() {
                 {session.user.full_name}
               </p>
               <p className="text-[11px] text-slate-500 leading-tight">
-                {formatUserRole(session.user.role)}
+                {formatUserLevel(session.user.level)}
               </p>
             </div>
             <button
               type="button"
               onClick={handleSignOut}
               aria-label="Sign out"
-              className="min-h-[44px] px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="min-h-[44px] px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
             >
               <LogOut className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span className="hidden sm:inline">Sign Out</span>
@@ -443,18 +376,22 @@ export default function App() {
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         <div className="mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 [text-wrap:balance]">
-            {roleView === 'technician'
+            {roleView === 'technician' || !canAccessManagementView
               ? 'Field Van Inventory & Usage'
-              : 'Warehouse Restock & Fleet Control'}
+              : session.user.level === 1
+                ? 'Admin Control & User Management'
+                : 'Manager Fleet & Restock Control'}
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            {roleView === 'technician'
+            {roleView === 'technician' || !canAccessManagementView
               ? 'Log parts installed at customer sites and monitor your van par readiness.'
-              : 'Fulfill pending technician claims, tune van par levels, manage team access, and review audit logs.'}
+              : session.user.level === 1
+                ? 'Fulfill restock claims, configure van par levels, review audit logs, and manage user levels.'
+                : 'Fulfill pending technician claims, configure van par levels, and review audit logs.'}
           </p>
         </div>
 
-        {roleView === 'technician' || !canAccessAdminView ? (
+        {roleView === 'technician' || !canAccessManagementView ? (
           <TechnicianView
             vans={state.vans}
             selectedVanId={selectedVanId}
@@ -481,46 +418,19 @@ export default function App() {
         )}
       </main>
 
-      {/* Quiet Footer with Reset Demo Data Utility */}
+      {/* Quiet Footer */}
       <footer className="border-t border-slate-200 bg-white mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-center justify-between gap-3">
           <p className="text-xs text-slate-500">
-            VanSpare Sync · Signed in as {session.user.full_name} (
-            {formatUserRole(session.user.role)})
+            VanSpare Sync · Closed-loop van par-level inventory tracker
           </p>
-
-          <div className="flex items-center gap-2">
-            {confirmReset ? (
-              <>
-                <span className="text-xs font-medium text-slate-600">
-                  Restore initial demo data?
-                </span>
-                <button
-                  type="button"
-                  onClick={handleResetDemoData}
-                  className="min-h-[40px] px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors whitespace-nowrap"
-                >
-                  Confirm Reset
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmReset(false)}
-                  className="min-h-[40px] px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors whitespace-nowrap"
-                >
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmReset(true)}
-                className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-              >
-                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                <span>Reset Demo Data</span>
-              </button>
-            )}
-          </div>
+          <p className="text-xs text-slate-500">
+            Signed in as{' '}
+            <span className="font-semibold text-slate-700">
+              {session.user.full_name}
+            </span>{' '}
+            · {formatUserLevel(session.user.level)}
+          </p>
         </div>
       </footer>
 

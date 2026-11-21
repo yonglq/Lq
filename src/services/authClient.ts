@@ -1,4 +1,9 @@
-import { AuthSession, AuthStatus, AuthUser, UserRole } from '../types/auth';
+import {
+  AuthSession,
+  AuthUser,
+  SendOtpResponse,
+  UserLevel,
+} from '../types/auth';
 
 async function apiRequest<T>(
   url: string,
@@ -34,28 +39,23 @@ async function apiRequest<T>(
 }
 
 export const authClient = {
-  getStatus(): Promise<AuthStatus> {
-    return apiRequest<AuthStatus>('/api/auth/status');
-  },
-
-  setupInitialAdmin(params: {
-    full_name: string;
+  sendOtp(params: {
     email: string;
-    password: string;
-    bootstrapPasscode?: string;
-  }): Promise<AuthSession> {
-    return apiRequest<AuthSession>('/api/auth/setup', {
+    purpose: 'signup' | 'reset';
+  }): Promise<SendOtpResponse> {
+    return apiRequest<SendOtpResponse>('/api/auth/send-otp', {
       method: 'POST',
       body: params,
     });
   },
 
-  registerTechnician(params: {
+  signup(params: {
     full_name: string;
     email: string;
+    otp: string;
     password: string;
   }): Promise<AuthSession> {
-    return apiRequest<AuthSession>('/api/auth/register', {
+    return apiRequest<AuthSession>('/api/auth/signup', {
       method: 'POST',
       body: params,
     });
@@ -70,7 +70,7 @@ export const authClient = {
 
   resetPassword(params: {
     email: string;
-    token: string;
+    otp: string;
     newPassword: string;
   }): Promise<{ message: string }> {
     return apiRequest<{ message: string }>('/api/auth/reset-password', {
@@ -83,45 +83,28 @@ export const authClient = {
     return apiRequest<{ users: AuthUser[] }>('/api/users', { token });
   },
 
-  createUser(
-    token: string,
-    params: {
-      full_name: string;
-      email: string;
-      role: UserRole;
-      password: string;
-    }
-  ): Promise<{ user: AuthUser }> {
-    return apiRequest<{ user: AuthUser }>('/api/users', {
-      method: 'POST',
-      token,
-      body: params,
-    });
-  },
-
   updateUser(
     token: string,
     userId: string,
-    patch: { full_name?: string; role?: UserRole; is_active?: boolean }
+    patch: { level?: UserLevel; is_active?: boolean; full_name?: string }
   ): Promise<{ user: AuthUser }> {
-    return apiRequest<{ user: AuthUser }>(`/api/users/${encodeURIComponent(userId)}`, {
-      method: 'PATCH',
-      token,
-      body: patch,
-    });
+    return apiRequest<{ user: AuthUser }>(
+      `/api/users/${encodeURIComponent(userId)}`,
+      {
+        method: 'PATCH',
+        token,
+        body: patch,
+      }
+    );
   },
 
-  issueResetToken(
-    token: string,
-    userId: string
-  ): Promise<{ user: AuthUser; resetToken: string; expiresAt: string }> {
-    return apiRequest<{
-      user: AuthUser;
-      resetToken: string;
-      expiresAt: string;
-    }>(`/api/users/${encodeURIComponent(userId)}/reset-token`, {
-      method: 'POST',
-      token,
-    });
+  deleteUser(token: string, userId: string): Promise<{ deletedId: string }> {
+    return apiRequest<{ deletedId: string }>(
+      `/api/users/${encodeURIComponent(userId)}`,
+      {
+        method: 'DELETE',
+        token,
+      }
+    );
   },
 };
