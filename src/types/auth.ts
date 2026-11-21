@@ -48,7 +48,6 @@ export interface AuthSession {
 export interface SendOtpResponse {
   message: string;
   expiresAt?: string;
-  previewCode?: string;
 }
 
 export function formatUserLevel(level: UserLevel): string {

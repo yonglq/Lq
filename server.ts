@@ -12,7 +12,11 @@ import {
   verifySessionToken,
 } from './server/authCrypto.ts';
 import type { UserLevel } from './server/authCrypto.ts';
-import { sendVerificationCodeEmail } from './server/emailService.ts';
+import {
+  EMAIL_DELIVERY_ERROR_MESSAGE,
+  isEmailDeliveryConfigured,
+  sendVerificationCodeEmail,
+} from './server/emailService.ts';
 import { otpStore } from './server/otpStore.ts';
 import type { OtpPurpose } from './server/otpStore.ts';
 import {
@@ -182,8 +186,13 @@ async function startServer() {
         return;
       }
 
+      if (!isEmailDeliveryConfigured()) {
+        res.status(500).json({ error: EMAIL_DELIVERY_ERROR_MESSAGE });
+        return;
+      }
+
       if (purpose === 'reset') {
-        // Avoid enumerating accounts when SMTP is configured in production
+        // Avoid enumerating accounts while still requiring valid email configuration
         if (!existing || !existing.is_active) {
           res.json({
             message:
@@ -198,27 +207,26 @@ async function startServer() {
         purpose as OtpPurpose
       );
 
-      const delivery = await sendVerificationCodeEmail({
-        to: normalized,
-        code: plainCode,
-        purpose: purpose as OtpPurpose,
-      });
+      try {
+        await sendVerificationCodeEmail({
+          to: normalized,
+          code: plainCode,
+          purpose: purpose as OtpPurpose,
+        });
+      } catch {
+        // Remove unused OTP if email failed to send
+        otpStore.clearForEmail(normalized);
+        res.status(502).json({ error: EMAIL_DELIVERY_ERROR_MESSAGE });
+        return;
+      }
 
       res.json({
         message:
-          delivery.deliveredVia === 'smtp'
-            ? 'A 6-digit verification code has been sent to your email. It expires in 10 minutes.'
-            : 'Verification code generated (expires in 10 minutes). Configure SMTP_* secrets for live email delivery.',
+          'A 6-digit verification code has been sent to your email. It expires in 10 minutes.',
         expiresAt,
-        ...(delivery.previewCode ? { previewCode: delivery.previewCode } : {}),
       });
-    } catch (err) {
-      res.status(500).json({
-        error:
-          err instanceof Error
-            ? err.message
-            : 'Unable to send verification code right now.',
-      });
+    } catch {
+      res.status(500).json({ error: EMAIL_DELIVERY_ERROR_MESSAGE });
     }
   });
 

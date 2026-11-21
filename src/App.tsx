@@ -287,13 +287,13 @@ export default function App() {
     <div className="min-h-screen flex flex-col bg-[#F4F6F8] text-slate-900">
       {/* Global Navigation Header */}
       <header className="sticky top-0 z-30 bg-white border-t-2 border-t-[#1B499B] border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 min-h-[72px] py-2 flex items-center justify-between gap-2 sm:gap-4">
           {/* MasBina Security Alarm Logo */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2.5 shrink-0 py-0.5">
             <img
               src="/images/masbina-logo.png"
               alt="MasBina Security Alarm Since 1986"
-              className="h-10 sm:h-11 w-auto object-contain shrink-0"
+              className="h-12 sm:h-14 w-auto object-contain block shrink-0"
             />
             <span className="hidden lg:inline-block h-6 w-px bg-slate-200" aria-hidden="true" />
             <span className="hidden lg:inline-block font-display text-sm font-bold tracking-tight text-[#1B499B] whitespace-nowrap shrink-0">
