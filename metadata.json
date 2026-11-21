@@ -1,0 +1,6 @@
+{
+  "name": "VanSpare Sync",
+  "description": "Mobile-first van spare parts inventory, par-level tracking, and technician claim management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
