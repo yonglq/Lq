@@ -169,4 +169,15 @@ export const otpStore = {
     writeOtpsToDisk(otpsCache);
     return { ok: true };
   },
+
+  clearForEmail(email: string): number {
+    const normalized = normalizeEmail(email);
+    const before = otpsCache.length;
+    otpsCache = otpsCache.filter((r) => r.email !== normalized);
+    const removed = before - otpsCache.length;
+    if (removed > 0) {
+      writeOtpsToDisk(otpsCache);
+    }
+    return removed;
+  },
 };

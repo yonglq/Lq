@@ -33,6 +33,37 @@ function getFirstAdminEmail(): string {
   return process.env.FIRST_ADMIN_EMAIL?.trim().toLowerCase() ?? '';
 }
 
+function isRepeatSignupOverwriteEnabled(): boolean {
+  return process.env.ALLOW_REPEAT_SIGNUP_TEST === 'true';
+}
+
+function isTestResetEnabled(): boolean {
+  return (
+    process.env.NODE_ENV !== 'production' || isRepeatSignupOverwriteEnabled()
+  );
+}
+
+function resolveSignupLevel(
+  normalizedEmail: string,
+  excludeUserId?: string
+): UserLevel {
+  const hasAdmin = excludeUserId
+    ? userStore.hasAnyOtherAdmin(excludeUserId)
+    : userStore.hasAnyAdmin();
+
+  if (hasAdmin) {
+    return 3;
+  }
+
+  const firstAdminEmail = getFirstAdminEmail();
+  if (firstAdminEmail.length > 0) {
+    return normalizedEmail === firstAdminEmail ? 1 : 3;
+  }
+
+  // When FIRST_ADMIN_EMAIL is not configured and no Admin exists yet, promote the first verified user to Level 1 Admin
+  return 1;
+}
+
 function requireAuth(
   req: AuthenticatedRequest,
   res: Response,
@@ -83,6 +114,44 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '16kb' }));
 
+  // Expose non-sensitive auth testing flags for UI controls
+  app.get('/api/auth/config', (_req: Request, res: Response) => {
+    res.json({
+      testResetEnabled: isTestResetEnabled(),
+      repeatSignupOverwrite: isRepeatSignupOverwriteEnabled(),
+    });
+  });
+
+  // Dev / Test-only endpoint to reset a specific test email for repeated OTP + Sign Up testing
+  app.delete('/api/auth/test-reset', (req: Request, res: Response) => {
+    if (!isTestResetEnabled()) {
+      res.status(403).json({
+        error: 'Test account reset is disabled in production mode.',
+      });
+      return;
+    }
+
+    const rawEmail = req.query.email;
+    if (typeof rawEmail !== 'string' || !isValidEmail(rawEmail)) {
+      res.status(400).json({ error: 'Provide a valid email query parameter.' });
+      return;
+    }
+
+    const normalized = normalizeEmail(rawEmail);
+    const removedUser = userStore.removeByEmail(normalized);
+    const clearedOtps = otpStore.clearForEmail(normalized);
+
+    res.json({
+      reset: true,
+      email: normalized,
+      removedUser,
+      clearedOtps,
+      message: removedUser
+        ? `Cleared test account for ${normalized}. You can now re-test OTP & Sign Up from scratch.`
+        : `Cleared any pending verification codes for ${normalized}. Ready for fresh Sign Up.`,
+    });
+  });
+
   // Send 6-digit email verification code for Sign Up or Forgot Password
   app.post('/api/auth/send-otp', async (req: Request, res: Response) => {
     try {
@@ -100,9 +169,15 @@ async function startServer() {
       const normalized = normalizeEmail(email);
       const existing = userStore.findByEmail(normalized);
 
-      if (purpose === 'signup' && existing) {
+      if (
+        purpose === 'signup' &&
+        existing &&
+        !isRepeatSignupOverwriteEnabled()
+      ) {
         res.status(409).json({
-          error: 'An account with this email already exists. Please sign in.',
+          error: isTestResetEnabled()
+            ? 'An account with this email already exists. Sign in or click "Reset this email for re-testing".'
+            : 'An account with this email already exists. Please sign in.',
         });
         return;
       }
@@ -181,9 +256,14 @@ async function startServer() {
       }
 
       const normalized = normalizeEmail(email);
-      if (userStore.findByEmail(normalized)) {
+      const existing = userStore.findByEmail(normalized);
+      const allowOverwrite = isRepeatSignupOverwriteEnabled();
+
+      if (existing && !allowOverwrite) {
         res.status(409).json({
-          error: 'An account with this email already exists. Please sign in.',
+          error: isTestResetEnabled()
+            ? 'An account with this email already exists. Sign in or click "Reset this email for re-testing".'
+            : 'An account with this email already exists. Please sign in.',
         });
         return;
       }
@@ -194,16 +274,22 @@ async function startServer() {
         return;
       }
 
-      // Default Level 3 (Technician); promote to Level 1 (Admin) ONLY if email matches FIRST_ADMIN_EMAIL and no Admin exists yet
-      const firstAdminEmail = getFirstAdminEmail();
-      const assignedLevel: UserLevel =
-        firstAdminEmail.length > 0 &&
-        normalized === firstAdminEmail &&
-        !userStore.hasAnyAdmin()
-          ? 1
-          : 3;
-
+      const assignedLevel = resolveSignupLevel(normalized, existing?.id);
       const passwordHash = await hashPassword(password);
+
+      if (existing && allowOverwrite) {
+        const updated = userStore.update(existing.id, {
+          full_name: full_name.trim(),
+          password_hash: passwordHash,
+          level: assignedLevel,
+          is_active: true,
+        });
+        const record = updated as UserRecord;
+        const token = signSessionToken(record);
+        res.status(200).json({ token, user: toPublicUser(record) });
+        return;
+      }
+
       const created = userStore.create({
         email: normalized,
         password_hash: passwordHash,

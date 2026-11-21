@@ -4,6 +4,10 @@
   --font-display: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-masbina-blue: #1B499B;
+  --color-masbina-blue-dark: #153A7C;
+  --color-masbina-red: #E31E24;
+  --color-masbina-red-dark: #C5171C;
 }
 
 @layer base {

@@ -21,8 +21,8 @@ export async function sendVerificationCodeEmail(params: {
 }): Promise<EmailDeliveryResult> {
   const subject =
     params.purpose === 'signup'
-      ? 'VanSpare Sync — Email Verification Code'
-      : 'VanSpare Sync — Password Reset Verification Code';
+      ? 'MasBina Security Alarm — Email Verification Code'
+      : 'MasBina Security Alarm — Password Reset Verification Code';
 
   const actionText =
     params.purpose === 'signup'
@@ -48,7 +48,7 @@ export async function sendVerificationCodeEmail(params: {
       from,
       to: params.to,
       subject,
-      text: `Your VanSpare Sync verification code is: ${params.code}\n\nUse this 6-digit code within 10 minutes to ${actionText}. If you did not request this code, you can safely ignore this message.`,
+      text: `Your MasBina Security Alarm verification code is: ${params.code}\n\nUse this 6-digit code within 10 minutes to ${actionText}. If you did not request this code, you can safely ignore this message.`,
     });
 
     return { deliveredVia: 'smtp' };

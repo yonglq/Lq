@@ -39,6 +39,34 @@ async function apiRequest<T>(
 }
 
 export const authClient = {
+  getConfig(): Promise<{
+    testResetEnabled: boolean;
+    repeatSignupOverwrite: boolean;
+  }> {
+    return apiRequest<{
+      testResetEnabled: boolean;
+      repeatSignupOverwrite: boolean;
+    }>('/api/auth/config');
+  },
+
+  resetTestAccount(email: string): Promise<{
+    reset: boolean;
+    email: string;
+    removedUser: boolean;
+    clearedOtps: number;
+    message: string;
+  }> {
+    return apiRequest<{
+      reset: boolean;
+      email: string;
+      removedUser: boolean;
+      clearedOtps: number;
+      message: string;
+    }>(`/api/auth/test-reset?email=${encodeURIComponent(email)}`, {
+      method: 'DELETE',
+    });
+  },
+
   sendOtp(params: {
     email: string;
     purpose: 'signup' | 'reset';

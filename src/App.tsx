@@ -4,7 +4,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LogOut, ShieldCheck, Truck, Wrench } from 'lucide-react';
+import { LogOut, ShieldCheck, Wrench } from 'lucide-react';
 import { AdminView } from './components/AdminView';
 import { AuthScreen } from './components/AuthScreen';
 import { TechnicianView } from './components/TechnicianView';
@@ -286,14 +286,17 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-[#F4F6F8] text-slate-900">
       {/* Global Navigation Header */}
-      <header className="sticky top-0 z-30 bg-white border-b border-slate-200">
+      <header className="sticky top-0 z-30 bg-white border-t-2 border-t-[#1B499B] border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4">
-          {/* Brand Logo */}
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
-            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
-              <Truck className="w-4 h-4 sm:w-5 sm:h-5" aria-hidden="true" />
-            </div>
-            <span className="font-display text-sm sm:text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
+          {/* MasBina Security Alarm Logo */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <img
+              src="/images/masbina-logo.png"
+              alt="MasBina Security Alarm Since 1986"
+              className="h-10 sm:h-11 w-auto object-contain shrink-0"
+            />
+            <span className="hidden lg:inline-block h-6 w-px bg-slate-200" aria-hidden="true" />
+            <span className="hidden lg:inline-block font-display text-sm font-bold tracking-tight text-[#1B499B] whitespace-nowrap shrink-0">
               VanSpare Sync
             </span>
           </div>
@@ -308,10 +311,10 @@ export default function App() {
                 type="button"
                 onClick={() => setRoleView('technician')}
                 aria-current={roleView === 'technician' ? 'page' : undefined}
-                className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
+                className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1B499B] ${
                   roleView === 'technician'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-[#1B499B] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-[#1B499B]'
                 }`}
               >
                 <Wrench
@@ -326,10 +329,10 @@ export default function App() {
                 type="button"
                 onClick={() => setRoleView('admin')}
                 aria-current={roleView === 'admin' ? 'page' : undefined}
-                className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
+                className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1B499B] ${
                   roleView === 'admin'
-                    ? 'bg-white text-slate-900 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
+                    ? 'bg-[#1B499B] text-white shadow-xs'
+                    : 'text-slate-600 hover:text-[#1B499B]'
                 }`}
               >
                 <ShieldCheck
@@ -341,7 +344,11 @@ export default function App() {
                   <span className="hidden sm:inline"> View</span>
                 </span>
                 {totalPendingUnits > 0 && (
-                  <span className="font-mono text-xs text-amber-700 font-bold tabular-nums">
+                  <span
+                    className={`font-mono text-xs font-bold tabular-nums ${
+                      roleView === 'admin' ? 'text-white/90' : 'text-[#E31E24]'
+                    }`}
+                  >
                     ({totalPendingUnits})
                   </span>
                 )}
@@ -355,7 +362,7 @@ export default function App() {
               <p className="text-xs font-semibold text-slate-900 leading-tight max-w-[160px] truncate">
                 {session.user.full_name}
               </p>
-              <p className="text-[11px] text-slate-500 leading-tight">
+              <p className="text-[11px] font-medium text-[#1B499B] leading-tight">
                 {formatUserLevel(session.user.level)}
               </p>
             </div>
@@ -363,7 +370,7 @@ export default function App() {
               type="button"
               onClick={handleSignOut}
               aria-label="Sign out"
-              className="min-h-[44px] px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+              className="min-h-[44px] px-2.5 sm:px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-[#E31E24]/5 hover:border-[#E31E24]/30 hover:text-[#E31E24] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1B499B]"
             >
               <LogOut className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span className="hidden sm:inline">Sign Out</span>
@@ -422,7 +429,7 @@ export default function App() {
       <footer className="border-t border-slate-200 bg-white mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-center justify-between gap-3">
           <p className="text-xs text-slate-500">
-            VanSpare Sync · Closed-loop van par-level inventory tracker
+            MasBina Security Alarm (Since 1986) · VanSpare Sync
           </p>
           <p className="text-xs text-slate-500">
             Signed in as{' '}

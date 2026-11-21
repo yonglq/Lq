@@ -125,6 +125,10 @@ export const userStore = {
     return usersCache.some((u) => u.level === 1);
   },
 
+  hasAnyOtherAdmin(excludeId: string): boolean {
+    return usersCache.some((u) => u.level === 1 && u.id !== excludeId);
+  },
+
   countActiveAdmins(): number {
     return usersCache.filter((u) => u.level === 1 && u.is_active).length;
   },
@@ -222,6 +226,15 @@ export const userStore = {
     const exists = usersCache.some((u) => u.id === id);
     if (!exists) return false;
     usersCache = usersCache.filter((u) => u.id !== id);
+    writeUsersToDisk(usersCache);
+    return true;
+  },
+
+  removeByEmail(email: string): boolean {
+    const normalized = normalizeEmail(email);
+    const exists = usersCache.some((u) => u.email === normalized);
+    if (!exists) return false;
+    usersCache = usersCache.filter((u) => u.email !== normalized);
     writeUsersToDisk(usersCache);
     return true;
   },
