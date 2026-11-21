@@ -4,10 +4,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { RotateCcw, ShieldCheck, Truck, Wrench } from 'lucide-react';
+import { LogOut, RotateCcw, ShieldCheck, Truck, Wrench } from 'lucide-react';
 import { AdminView } from './components/AdminView';
+import { AuthScreen } from './components/AuthScreen';
 import { TechnicianView } from './components/TechnicianView';
 import { ToastContainer } from './components/ToastContainer';
+import { authClient } from './services/authClient';
 import {
   addPartToVanInState,
   addVanInState,
@@ -20,6 +22,11 @@ import {
   updateParLevelInState,
 } from './services/inventoryStore';
 import {
+  AuthSession,
+  AuthStatus,
+  formatUserRole,
+} from './types/auth';
+import {
   AppRole,
   InventoryState,
   ToastMessage,
@@ -31,14 +38,33 @@ export default function App() {
   const [state, setState] = useState<InventoryState>(() =>
     localInventoryRepository.load()
   );
-  const [role, setRole] = useState<AppRole>('technician');
+  // Session token is held strictly in React memory (never persisted to localStorage)
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const [authLoadError, setAuthLoadError] = useState<string | null>(null);
+
+  const [roleView, setRoleView] = useState<AppRole>('technician');
   const [selectedVanId, setSelectedVanId] = useState<string>(
     () => state.vans[0]?.id ?? 'van-01'
   );
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [confirmReset, setConfirmReset] = useState<boolean>(false);
 
-  // Persist every state transition to localStorage
+  const fetchAuthStatus = useCallback(async () => {
+    setAuthLoadError(null);
+    try {
+      const status = await authClient.getStatus();
+      setAuthStatus(status);
+    } catch {
+      setAuthLoadError('Unable to reach the authentication service.');
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAuthStatus();
+  }, [fetchAuthStatus]);
+
+  // Persist every inventory transition to localStorage
   useEffect(() => {
     localInventoryRepository.save(state);
   }, [state]);
@@ -49,6 +75,16 @@ export default function App() {
       setSelectedVanId(state.vans[0].id);
     }
   }, [state.vans, selectedVanId]);
+
+  const canAccessAdminView =
+    session?.user.role === 'admin' || session?.user.role === 'manager';
+
+  // Enforce RBAC view boundary when user changes
+  useEffect(() => {
+    if (!canAccessAdminView && roleView === 'admin') {
+      setRoleView('technician');
+    }
+  }, [canAccessAdminView, roleView]);
 
   const pushToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
     const id = createEntityId('toast');
@@ -61,6 +97,29 @@ export default function App() {
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  const handleAuthenticated = useCallback(
+    (nextSession: AuthSession) => {
+      setSession(nextSession);
+      setRoleView(
+        nextSession.user.role === 'admin' || nextSession.user.role === 'manager'
+          ? 'admin'
+          : 'technician'
+      );
+      pushToast({
+        tone: 'success',
+        title: `Signed in as ${nextSession.user.full_name}`,
+        description: `Role: ${formatUserRole(nextSession.user.role)}`,
+      });
+    },
+    [pushToast]
+  );
+
+  const handleSignOut = useCallback(() => {
+    setSession(null);
+    setRoleView('technician');
+    fetchAuthStatus();
+  }, [fetchAuthStatus]);
 
   const totalPendingUnits = useMemo(
     () => state.inventory.reduce((sum, item) => sum + getDeficitQty(item), 0),
@@ -249,6 +308,49 @@ export default function App() {
     });
   }, [pushToast]);
 
+  // Render Sign-In / First-Run Admin Setup screen when unauthenticated
+  if (!session) {
+    if (authLoadError) {
+      return (
+        <div className="min-h-screen bg-[#F4F6F8] flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-6 max-w-sm w-full text-center space-y-3">
+            <p className="text-sm font-semibold text-slate-900">
+              {authLoadError}
+            </p>
+            <button
+              type="button"
+              onClick={fetchAuthStatus}
+              className="min-h-[44px] px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold"
+            >
+              Retry Connection
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (!authStatus) {
+      return (
+        <div className="min-h-screen bg-[#F4F6F8] flex items-center justify-center p-4">
+          <p className="text-sm font-medium text-slate-500">
+            Loading VanSpare Sync...
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <>
+        <AuthScreen
+          status={authStatus}
+          onAuthenticated={handleAuthenticated}
+          onRefreshStatus={fetchAuthStatus}
+        />
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-[#F4F6F8] text-slate-900">
       {/* Global Navigation Header */}
@@ -259,58 +361,81 @@ export default function App() {
             <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
               <Truck className="w-4 h-4 sm:w-5 sm:h-5" aria-hidden="true" />
             </div>
-            <span className="font-display text-base sm:text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
+            <span className="font-display text-sm sm:text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
               VanSpare Sync
             </span>
           </div>
 
-          {/* Role Switcher Tabs */}
-          <nav
-            aria-label="Role view switcher"
-            className="flex items-center p-1 bg-slate-100 rounded-lg border border-slate-200/80 shrink-0"
-          >
-            <button
-              type="button"
-              onClick={() => setRole('technician')}
-              aria-current={role === 'technician' ? 'page' : undefined}
-              className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
-                role === 'technician'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
+          {/* Role Switcher Tabs (Admins & Managers only) */}
+          {canAccessAdminView && (
+            <nav
+              aria-label="Role view switcher"
+              className="flex items-center p-1 bg-slate-100 rounded-lg border border-slate-200/80 shrink-0"
             >
-              <Wrench
-                className="hidden sm:block w-4 h-4 shrink-0"
-                aria-hidden="true"
-              />
-              <span>
-                Technician<span className="hidden sm:inline"> View</span>
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setRole('admin')}
-              aria-current={role === 'admin' ? 'page' : undefined}
-              className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
-                role === 'admin'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <ShieldCheck
-                className="hidden sm:block w-4 h-4 shrink-0"
-                aria-hidden="true"
-              />
-              <span>
-                Admin<span className="hidden sm:inline"> View</span>
-              </span>
-              {totalPendingUnits > 0 && (
-                <span className="font-mono text-xs text-amber-700 font-bold tabular-nums">
-                  ({totalPendingUnits})
+              <button
+                type="button"
+                onClick={() => setRoleView('technician')}
+                aria-current={roleView === 'technician' ? 'page' : undefined}
+                className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
+                  roleView === 'technician'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Wrench
+                  className="hidden sm:block w-4 h-4 shrink-0"
+                  aria-hidden="true"
+                />
+                <span>
+                  Technician<span className="hidden sm:inline"> View</span>
                 </span>
-              )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setRoleView('admin')}
+                aria-current={roleView === 'admin' ? 'page' : undefined}
+                className={`min-h-[44px] px-2.5 sm:px-4 py-1.5 rounded-md text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 ${
+                  roleView === 'admin'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <ShieldCheck
+                  className="hidden sm:block w-4 h-4 shrink-0"
+                  aria-hidden="true"
+                />
+                <span>
+                  Admin<span className="hidden sm:inline"> View</span>
+                </span>
+                {totalPendingUnits > 0 && (
+                  <span className="font-mono text-xs text-amber-700 font-bold tabular-nums">
+                    ({totalPendingUnits})
+                  </span>
+                )}
+              </button>
+            </nav>
+          )}
+
+          {/* Signed-in Account & Sign Out */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <div className="hidden md:block text-right">
+              <p className="text-xs font-semibold text-slate-900 leading-tight max-w-[160px] truncate">
+                {session.user.full_name}
+              </p>
+              <p className="text-[11px] text-slate-500 leading-tight">
+                {formatUserRole(session.user.role)}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              aria-label="Sign out"
+              className="min-h-[44px] px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 hover:text-slate-900 inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+            >
+              <LogOut className="w-4 h-4 shrink-0" aria-hidden="true" />
+              <span className="hidden sm:inline">Sign Out</span>
             </button>
-          </nav>
+          </div>
         </div>
       </header>
 
@@ -318,18 +443,18 @@ export default function App() {
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         <div className="mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 [text-wrap:balance]">
-            {role === 'technician'
+            {roleView === 'technician'
               ? 'Field Van Inventory & Usage'
               : 'Warehouse Restock & Fleet Control'}
           </h1>
           <p className="text-sm text-slate-600 mt-1">
-            {role === 'technician'
+            {roleView === 'technician'
               ? 'Log parts installed at customer sites and monitor your van par readiness.'
-              : 'Fulfill pending technician claims, tune van par levels, and review audit logs.'}
+              : 'Fulfill pending technician claims, tune van par levels, manage team access, and review audit logs.'}
           </p>
         </div>
 
-        {role === 'technician' ? (
+        {roleView === 'technician' || !canAccessAdminView ? (
           <TechnicianView
             vans={state.vans}
             selectedVanId={selectedVanId}
@@ -341,6 +466,8 @@ export default function App() {
           />
         ) : (
           <AdminView
+            currentUser={session.user}
+            authToken={session.token}
             vans={state.vans}
             inventory={state.inventory}
             logs={state.logs}
@@ -349,6 +476,7 @@ export default function App() {
             onAddPart={handleAddPart}
             onRemovePart={handleRemovePart}
             onAddVan={handleAddVan}
+            onNotify={pushToast}
           />
         )}
       </main>
@@ -357,7 +485,8 @@ export default function App() {
       <footer className="border-t border-slate-200 bg-white mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col sm:flex-row items-center justify-between gap-3">
           <p className="text-xs text-slate-500">
-            VanSpare Sync · Closed-loop van par-level inventory tracker
+            VanSpare Sync · Signed in as {session.user.full_name} (
+            {formatUserRole(session.user.role)})
           </p>
 
           <div className="flex items-center gap-2">

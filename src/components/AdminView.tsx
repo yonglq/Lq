@@ -1,10 +1,14 @@
+import { AuthUser } from '../types/auth';
 import { TransactionLog, Van, VanInventoryItem } from '../types/inventory';
 import { AdminKpiCards } from './admin/AdminKpiCards';
 import { AuditHistorySection } from './admin/AuditHistorySection';
 import { ParLevelConfigSection } from './admin/ParLevelConfigSection';
 import { RestockQueueSection } from './admin/RestockQueueSection';
+import { UserManagementSection } from './admin/UserManagementSection';
 
 interface AdminViewProps {
+  currentUser: AuthUser;
+  authToken: string;
   vans: Van[];
   inventory: VanInventoryItem[];
   logs: TransactionLog[];
@@ -20,9 +24,16 @@ interface AdminViewProps {
   }) => void;
   onRemovePart: (partId: string) => void;
   onAddVan: (params: { name: string; plateNumber: string }) => Van;
+  onNotify: (toast: {
+    tone: 'success' | 'info' | 'warning';
+    title: string;
+    description?: string;
+  }) => void;
 }
 
 export function AdminView({
+  currentUser,
+  authToken,
   vans,
   inventory,
   logs,
@@ -31,6 +42,7 @@ export function AdminView({
   onAddPart,
   onRemovePart,
   onAddVan,
+  onNotify,
 }: AdminViewProps) {
   return (
     <div className="space-y-8">
@@ -50,6 +62,11 @@ export function AdminView({
         onAddVan={onAddVan}
       />
       <AuditHistorySection vans={vans} logs={logs} />
+      <UserManagementSection
+        currentUser={currentUser}
+        authToken={authToken}
+        onNotify={onNotify}
+      />
     </div>
   );
 }
