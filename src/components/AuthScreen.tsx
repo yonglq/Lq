@@ -297,20 +297,23 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const isTwoStepMode = mode === 'signup' || mode === 'forgot';
 
   return (
-    <div className="min-h-screen bg-[#F4F6F8] flex flex-col justify-center px-4 py-10">
-      <div className="w-full max-w-md mx-auto">
+    <div className="min-h-screen bg-[#F4F6F8] flex flex-col px-4 py-8 sm:py-12 overflow-y-auto">
+      <div className="w-full max-w-md mx-auto my-auto">
         {/* Unified White Auth Card with MasBina Security Alarm Branding */}
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+        <div className="bg-white border border-slate-200 rounded-xl shadow-xs">
           {/* Dual-Tone Brand Accent Bar: Royal Blue (#1B499B) + Security Red (#E31E24) */}
-          <div className="h-1.5 w-full flex" aria-hidden="true">
+          <div
+            className="h-1.5 w-full flex rounded-t-[11px] overflow-hidden"
+            aria-hidden="true"
+          >
             <div className="w-3/4 bg-[#1B499B]" />
             <div className="w-1/4 bg-[#E31E24]" />
           </div>
 
           <div className="px-6 pt-8 pb-7 sm:px-7 space-y-5">
-            {/* MasBina Security Alarm Logo with generous vertical clearance */}
+            {/* MasBina Security Alarm Logo with full top/bottom clearance */}
             <div className="text-center space-y-3 pb-4 border-b border-slate-100">
-              <div className="py-1 px-2 flex items-center justify-center">
+              <div className="pt-2 pb-2 px-2 flex items-center justify-center overflow-visible">
                 <img
                   src="/images/masbina-logo.png"
                   alt="MasBina Security Alarm Since 1986"
@@ -407,7 +410,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                         setEmail(e.target.value);
                         if (error) setError(null);
                       }}
-                      placeholder="name@masbina.com"
+                      placeholder="Enter your email"
                       className="w-full min-h-[48px] bg-white border border-slate-300 rounded-lg pl-10 pr-3.5 py-2.5 text-sm text-slate-900 focus:border-[#1B499B] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1B499B]/25"
                     />
                   </div>
@@ -559,7 +562,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                         setEmail(e.target.value);
                         if (error) setError(null);
                       }}
-                      placeholder="name@masbina.com"
+                      placeholder="Enter your email"
                       className="w-full min-h-[48px] bg-white border border-slate-300 rounded-lg pl-10 pr-3.5 py-2.5 text-sm text-slate-900 focus:border-[#1B499B] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1B499B]/25"
                     />
                   </div>
