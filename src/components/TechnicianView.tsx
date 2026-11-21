@@ -3,17 +3,21 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
+  Clock,
   Minus,
   Package,
   Plus,
   Search,
   Truck,
+  Undo2,
   Wrench,
 } from 'lucide-react';
 import {
+  TransactionLog,
   Van,
   VanInventoryItem,
   getDeficitQty,
+  getStockBadgeStyle,
   getStockStatus,
   getVanReadiness,
 } from '../types/inventory';
@@ -23,22 +27,40 @@ interface TechnicianViewProps {
   selectedVanId: string;
   onSelectVan: (vanId: string) => void;
   inventory: VanInventoryItem[];
+  logs: TransactionLog[];
   onLogUsage: (params: {
     vanId: string;
     partId: string;
     qty: number;
     customerRef: string;
-  }) => boolean;
+  }) => void;
+  onRevertConsumeLog: (logId: string) => void;
 }
 
 type ChecklistFilter = 'all' | 'deficit' | 'full';
+
+function formatShortTime(iso: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
 
 export function TechnicianView({
   vans,
   selectedVanId,
   onSelectVan,
   inventory,
+  logs,
   onLogUsage,
+  onRevertConsumeLog,
 }: TechnicianViewProps) {
   const vanItems = useMemo(
     () => inventory.filter((item) => item.vanId === selectedVanId),
@@ -52,18 +74,33 @@ export function TechnicianView({
 
   const readiness = useMemo(() => getVanReadiness(vanItems), [vanItems]);
 
+  const unclaimedLogs = useMemo(
+    () =>
+      logs
+        .filter(
+          (log) =>
+            log.vanId === selectedVanId &&
+            log.type === 'CONSUME' &&
+            log.status === 'PENDING_CLAIM'
+        )
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    [logs, selectedVanId]
+  );
+
   const firstAvailablePartId = useMemo(
     () => vanItems.find((item) => item.currentQty > 0)?.id ?? '',
     [vanItems]
   );
 
-  const [selectedPartId, setSelectedPartId] = useState<string>(firstAvailablePartId);
+  const [selectedPartId, setSelectedPartId] =
+    useState<string>(firstAvailablePartId);
   const [qty, setQty] = useState<number>(1);
   const [customerRef, setCustomerRef] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [checklistFilter, setChecklistFilter] = useState<ChecklistFilter>('all');
+  const [checklistFilter, setChecklistFilter] =
+    useState<ChecklistFilter>('all');
 
   const customerInputRef = useRef<HTMLInputElement>(null);
   const usageFormRef = useRef<HTMLElement>(null);
@@ -107,7 +144,10 @@ export function TechnicianView({
     setSelectedPartId(partId);
     setQty(1);
     setFormError(null);
-    usageFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    usageFormRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest',
+    });
     setTimeout(() => {
       customerInputRef.current?.focus();
     }, 150);
@@ -130,30 +170,31 @@ export function TechnicianView({
 
     const trimmedRef = customerRef.trim();
     if (!trimmedRef) {
-      setFormError('Enter a Customer Name or Job Order ID to record this claim.');
+      setFormError(
+        'Enter a Customer Name or Job Order ID to record this claim.'
+      );
       customerInputRef.current?.focus();
       return;
     }
 
-    const ok = onLogUsage({
+    onLogUsage({
       vanId: selectedVanId,
       partId: selectedPart.id,
       qty,
       customerRef: trimmedRef,
     });
 
-    if (ok) {
-      setQty(1);
-      setCustomerRef('');
-      setFormError(null);
-    }
+    setQty(1);
+    setCustomerRef('');
+    setFormError(null);
   };
 
   const filteredItems = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return vanItems
       .filter((item) => {
-        if (checklistFilter === 'deficit' && getDeficitQty(item) === 0) return false;
+        if (checklistFilter === 'deficit' && getDeficitQty(item) === 0)
+          return false;
         if (checklistFilter === 'full' && getDeficitQty(item) > 0) return false;
         if (!query) return true;
         return (
@@ -163,7 +204,6 @@ export function TechnicianView({
         );
       })
       .sort((a, b) => {
-        // Surface depleted and low items first so technicians see what's missing immediately
         const deficitDiff = getDeficitQty(b) - getDeficitQty(a);
         if (deficitDiff !== 0) return deficitDiff;
         return a.partName.localeCompare(b.partName);
@@ -221,7 +261,9 @@ export function TechnicianView({
                   {selectedVan.plateNumber}
                 </span>
                 <span aria-hidden="true">·</span>
-                <span className="tabular-nums">{vanItems.length} assigned SKUs</span>
+                <span className="tabular-nums">
+                  {vanItems.length} assigned SKUs
+                </span>
               </p>
             )}
           </div>
@@ -288,162 +330,230 @@ export function TechnicianView({
 
       {/* Main Two-Column Field Operations Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Quick Log Usage Form */}
-        <section
-          ref={usageFormRef}
-          className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 sm:p-6"
-        >
-          <div className="flex items-center justify-between gap-3 mb-5">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900 tracking-tight">
-                Use Part for Customer
-              </h2>
-              <p className="text-sm text-slate-500 mt-0.5">
-                Deduct consumed parts and queue an automatic restock claim.
-              </p>
-            </div>
-            <Wrench className="w-5 h-5 text-slate-400 shrink-0" aria-hidden="true" />
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-            {/* Select Part */}
-            <div>
-              <label
-                htmlFor="usage-part-select"
-                className="block text-sm font-semibold text-slate-700 mb-1.5"
-              >
-                Select Spare Part
-              </label>
-              <div className="relative">
-                <select
-                  id="usage-part-select"
-                  value={selectedPartId}
-                  onChange={(e) => handlePartChange(e.target.value)}
-                  disabled={!hasAnyInStock}
-                  className="w-full min-h-[48px] appearance-none bg-white border border-slate-300 rounded-lg pl-3.5 pr-10 py-2.5 text-sm font-medium text-slate-900 focus:border-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600/30 disabled:bg-slate-100 disabled:text-slate-500 transition-colors"
-                >
-                  {!hasAnyInStock && (
-                    <option value="">No parts currently in stock</option>
-                  )}
-                  {vanItems.map((item) => (
-                    <option
-                      key={item.id}
-                      value={item.id}
-                      disabled={item.currentQty === 0}
-                    >
-                      {item.partName} (Current: {item.currentQty} / Target:{' '}
-                      {item.targetQty})
-                      {item.currentQty === 0 ? ' — Out of Stock' : ''}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown
-                  aria-hidden="true"
-                  className="w-5 h-5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"
-                />
+        {/* Left Column: Quick Log Usage Form + Recent Unclaimed Logs */}
+        <div className="lg:col-span-5 space-y-6">
+          <section
+            ref={usageFormRef}
+            className="bg-white border border-slate-200 rounded-xl p-5 sm:p-6"
+          >
+            <div className="flex items-center justify-between gap-3 mb-5">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900 tracking-tight">
+                  Use Part for Customer
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Deduct consumed parts and queue an automatic restock claim.
+                </p>
               </div>
-              {selectedPart && (
-                <div className="mt-1.5 flex items-center justify-between text-xs text-slate-500">
-                  <span>
-                    <span className="font-mono">{selectedPart.sku}</span>
-                    <span aria-hidden="true"> · </span>
-                    <span>{selectedPart.category}</span>
-                  </span>
-                  <span className="tabular-nums font-medium text-slate-700">
-                    {selectedPart.currentQty} available in van
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Quantity Used Stepper */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label
-                  htmlFor="usage-qty-value"
-                  className="text-sm font-semibold text-slate-700"
-                >
-                  Quantity Used
-                </label>
-                {selectedPart && (
-                  <span className="text-xs text-slate-500 tabular-nums">
-                    Max {selectedPart.currentQty}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleDecrement}
-                  disabled={!selectedPart || qty <= 1}
-                  aria-label="Decrease quantity"
-                  className="min-w-[48px] min-h-[48px] flex items-center justify-center rounded-lg border border-slate-300 bg-slate-50 text-slate-900 hover:bg-slate-100 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                >
-                  <Minus className="w-5 h-5" />
-                </button>
-                <div
-                  id="usage-qty-value"
-                  aria-live="polite"
-                  className="flex-1 min-h-[48px] flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 font-mono text-xl font-semibold text-slate-900 tabular-nums"
-                >
-                  {selectedPart ? qty : 0}
-                </div>
-                <button
-                  type="button"
-                  onClick={handleIncrement}
-                  disabled={!selectedPart || qty >= maxQty}
-                  aria-label="Increase quantity"
-                  className="min-w-[48px] min-h-[48px] flex items-center justify-center rounded-lg border border-slate-300 bg-slate-50 text-slate-900 hover:bg-slate-100 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                >
-                  <Plus className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Customer / Job ID */}
-            <div>
-              <label
-                htmlFor="usage-customer-ref"
-                className="block text-sm font-semibold text-slate-700 mb-1.5"
-              >
-                Customer / Job ID <span className="text-rose-600">*</span>
-              </label>
-              <input
-                ref={customerInputRef}
-                id="usage-customer-ref"
-                type="text"
-                required
-                value={customerRef}
-                onChange={(e) => {
-                  setCustomerRef(e.target.value);
-                  if (formError) setFormError(null);
-                }}
-                placeholder="e.g., Mr. Tan / Job #1042"
-                className="w-full min-h-[48px] bg-white border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600/30 transition-colors"
+              <Wrench
+                className="w-5 h-5 text-slate-400 shrink-0"
+                aria-hidden="true"
               />
             </div>
 
-            {/* Validation Message */}
-            {formError && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-lg bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-sm text-rose-800"
-              >
-                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <span>{formError}</span>
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+              {/* Select Part */}
+              <div>
+                <label
+                  htmlFor="usage-part-select"
+                  className="block text-sm font-semibold text-slate-700 mb-1.5"
+                >
+                  Select Spare Part
+                </label>
+                <div className="relative">
+                  <select
+                    id="usage-part-select"
+                    value={selectedPartId}
+                    onChange={(e) => handlePartChange(e.target.value)}
+                    disabled={!hasAnyInStock}
+                    className="w-full min-h-[48px] appearance-none bg-white border border-slate-300 rounded-lg pl-3.5 pr-10 py-2.5 text-sm font-medium text-slate-900 focus:border-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600/30 disabled:bg-slate-100 disabled:text-slate-500 transition-colors"
+                  >
+                    {!hasAnyInStock && (
+                      <option value="">No parts currently in stock</option>
+                    )}
+                    {vanItems.map((item) => (
+                      <option
+                        key={item.id}
+                        value={item.id}
+                        disabled={item.currentQty === 0}
+                      >
+                        {item.partName} (Current: {item.currentQty} / Target:{' '}
+                        {item.targetQty})
+                        {item.currentQty === 0 ? ' — Out of Stock' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className="w-5 h-5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                  />
+                </div>
+                {selectedPart && (
+                  <div className="mt-1.5 flex items-center justify-between text-xs text-slate-500">
+                    <span>
+                      <span className="font-mono">{selectedPart.sku}</span>
+                      <span aria-hidden="true"> · </span>
+                      <span>{selectedPart.category}</span>
+                    </span>
+                    <span className="tabular-nums font-medium text-slate-700">
+                      {selectedPart.currentQty} available in van
+                    </span>
+                  </div>
+                )}
               </div>
-            )}
 
-            {/* Submit Button */}
-            <button
-              type="submit"
-              disabled={!hasAnyInStock}
-              className="w-full min-h-[48px] px-5 py-3 rounded-lg bg-blue-700 hover:bg-blue-800 active:scale-[0.99] text-white font-semibold text-sm transition-all disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap"
-            >
-              Confirm Usage & Notify Admin
-            </button>
-          </form>
-        </section>
+              {/* Quantity Used Stepper */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label
+                    htmlFor="usage-qty-value"
+                    className="text-sm font-semibold text-slate-700"
+                  >
+                    Quantity Used
+                  </label>
+                  {selectedPart && (
+                    <span className="text-xs text-slate-500 tabular-nums">
+                      Max {selectedPart.currentQty}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleDecrement}
+                    disabled={!selectedPart || qty <= 1}
+                    aria-label="Decrease quantity"
+                    className="min-w-[48px] min-h-[48px] flex items-center justify-center rounded-lg border border-slate-300 bg-slate-50 text-slate-900 hover:bg-slate-100 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                  >
+                    <Minus className="w-5 h-5" />
+                  </button>
+                  <div
+                    id="usage-qty-value"
+                    aria-live="polite"
+                    className="flex-1 min-h-[48px] flex items-center justify-center rounded-lg border border-slate-200 bg-slate-50 font-mono text-xl font-semibold text-slate-900 tabular-nums"
+                  >
+                    {selectedPart ? qty : 0}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleIncrement}
+                    disabled={!selectedPart || qty >= maxQty}
+                    aria-label="Increase quantity"
+                    className="min-w-[48px] min-h-[48px] flex items-center justify-center rounded-lg border border-slate-300 bg-slate-50 text-slate-900 hover:bg-slate-100 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                  >
+                    <Plus className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Customer / Job ID */}
+              <div>
+                <label
+                  htmlFor="usage-customer-ref"
+                  className="block text-sm font-semibold text-slate-700 mb-1.5"
+                >
+                  Customer / Job ID <span className="text-rose-600">*</span>
+                </label>
+                <input
+                  ref={customerInputRef}
+                  id="usage-customer-ref"
+                  type="text"
+                  required
+                  value={customerRef}
+                  onChange={(e) => {
+                    setCustomerRef(e.target.value);
+                    if (formError) setFormError(null);
+                  }}
+                  placeholder="e.g., Mr. Tan / Job #1042"
+                  className="w-full min-h-[48px] bg-white border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600/30 transition-colors"
+                />
+              </div>
+
+              {/* Validation Message */}
+              {formError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-lg bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-sm text-rose-800"
+                >
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>{formError}</span>
+                </div>
+              )}
+
+              {/* Submit Button */}
+              <button
+                type="submit"
+                disabled={!hasAnyInStock}
+                className="w-full min-h-[48px] px-5 py-3 rounded-lg bg-blue-700 hover:bg-blue-800 active:scale-[0.99] text-white font-semibold text-sm transition-all disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 whitespace-nowrap"
+              >
+                Confirm Usage & Notify Admin
+              </button>
+            </form>
+          </section>
+
+          {/* Compact Recent Unclaimed Logs Card with Undo */}
+          <section className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Clock
+                  className="w-4 h-4 text-amber-600 shrink-0"
+                  aria-hidden="true"
+                />
+                <h2 className="text-sm font-bold text-slate-900">
+                  Recent Unclaimed Logs
+                </h2>
+              </div>
+              <span className="text-xs font-mono text-slate-500 tabular-nums">
+                {unclaimedLogs.length} open
+              </span>
+            </div>
+
+            {unclaimedLogs.length === 0 ? (
+              <div className="px-5 py-6 text-center">
+                <p className="text-xs text-slate-500">
+                  No unclaimed usage logs for this van.
+                </p>
+              </div>
+            ) : (
+              <ul className="divide-y divide-slate-200">
+                {unclaimedLogs.map((log) => (
+                  <li
+                    key={log.id}
+                    className="px-5 py-3.5 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-900 truncate">
+                          {log.partName}
+                        </span>
+                        <span className="font-mono text-xs font-semibold text-rose-700 tabular-nums shrink-0">
+                          -{log.qty}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5 truncate">
+                        <span>{log.customerRef}</span>
+                        <span aria-hidden="true"> · </span>
+                        <span className="font-mono tabular-nums">
+                          {formatShortTime(log.timestamp)}
+                        </span>
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => onRevertConsumeLog(log.id)}
+                      aria-label={`Undo claim of ${log.qty} ${log.partName}`}
+                      className="min-h-[44px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 hover:border-slate-400 active:scale-[0.98] text-xs font-semibold text-slate-700 inline-flex items-center gap-1.5 transition-all whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Undo</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
 
         {/* Right Column: Current Van Checklist */}
         <section className="lg:col-span-7 bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -538,7 +648,10 @@ export function TechnicianView({
                 const status = getStockStatus(item);
                 const fillPct =
                   item.targetQty > 0
-                    ? Math.min(100, Math.round((item.currentQty / item.targetQty) * 100))
+                    ? Math.min(
+                        100,
+                        Math.round((item.currentQty / item.targetQty) * 100)
+                      )
                     : 100;
 
                 const rowBg =
@@ -548,12 +661,7 @@ export function TechnicianView({
                       ? 'bg-amber-50/60'
                       : 'bg-white';
 
-                const qtyBadgeClass =
-                  status === 'full'
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : status === 'low'
-                      ? 'bg-amber-100 text-amber-800'
-                      : 'bg-rose-100 text-rose-800';
+                const qtyBadgeClass = getStockBadgeStyle(status);
 
                 const barColorClass =
                   status === 'full'
@@ -572,18 +680,16 @@ export function TechnicianView({
                           </h3>
                           {deficit > 0 && (
                             <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold tabular-nums whitespace-nowrap ${
-                                status === 'empty'
-                                  ? 'bg-rose-100 text-rose-800'
-                                  : 'bg-amber-100 text-amber-800'
-                              }`}
+                              className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold tabular-nums whitespace-nowrap ${qtyBadgeClass}`}
                             >
                               Need +{deficit}
                             </span>
                           )}
                         </div>
                         <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
-                          <span className="font-mono text-slate-600">{item.sku}</span>
+                          <span className="font-mono text-slate-600">
+                            {item.sku}
+                          </span>
                           <span aria-hidden="true">·</span>
                           <span>{item.category}</span>
                           <span aria-hidden="true">·</span>

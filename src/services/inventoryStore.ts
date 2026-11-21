@@ -76,7 +76,11 @@ export function consumePartInState(
     qty: number;
     customerRef: string;
   }
-): { nextState: InventoryState; log: TransactionLog; item: VanInventoryItem } | null {
+): {
+  nextState: InventoryState;
+  log: TransactionLog;
+  item: VanInventoryItem;
+} | null {
   const van = state.vans.find((v) => v.id === params.vanId);
   const item = state.inventory.find(
     (i) => i.id === params.partId && i.vanId === params.vanId
@@ -115,10 +119,51 @@ export function consumePartInState(
   return { nextState, log, item: updatedItem };
 }
 
-export function restockPartToParInState(
+export function revertConsumeLogInState(
   state: InventoryState,
-  partId: string
-): { nextState: InventoryState; restockedQty: number; item: VanInventoryItem; van: Van } | null {
+  logId: string
+): {
+  nextState: InventoryState;
+  revertedLog: TransactionLog;
+} | null {
+  const targetLog = state.logs.find(
+    (log) =>
+      log.id === logId &&
+      log.type === 'CONSUME' &&
+      log.status === 'PENDING_CLAIM'
+  );
+  if (!targetLog) return null;
+
+  const nextInventory = state.inventory.map((item) => {
+    if (item.id !== targetLog.partId || item.vanId !== targetLog.vanId) {
+      return item;
+    }
+    return {
+      ...item,
+      currentQty: Math.min(item.targetQty, item.currentQty + targetLog.qty),
+    };
+  });
+
+  const nextState: InventoryState = {
+    ...state,
+    inventory: nextInventory,
+    logs: state.logs.filter((log) => log.id !== targetLog.id),
+  };
+
+  return { nextState, revertedLog: targetLog };
+}
+
+export function restockPartInState(
+  state: InventoryState,
+  partId: string,
+  restockQty?: number
+): {
+  nextState: InventoryState;
+  restockedQty: number;
+  closedClaimsCount: number;
+  item: VanInventoryItem;
+  van: Van;
+} | null {
   const item = state.inventory.find((i) => i.id === partId);
   if (!item) return null;
 
@@ -128,18 +173,60 @@ export function restockPartToParInState(
   const deficit = Math.max(0, item.targetQty - item.currentQty);
   if (deficit === 0) return null;
 
-  const matchingPendingLogs = state.logs.filter(
-    (log) =>
-      log.vanId === item.vanId &&
-      log.partId === item.id &&
-      log.type === 'CONSUME' &&
-      log.status === 'PENDING_CLAIM'
+  const requestedQty =
+    restockQty === undefined ? deficit : Math.floor(restockQty);
+  if (Number.isNaN(requestedQty) || requestedQty < 1) return null;
+
+  const actualRestockQty = Math.min(deficit, requestedQty);
+  const nextCurrentQty = Math.min(
+    item.targetQty,
+    item.currentQty + actualRestockQty
   );
+  const reachedPar = nextCurrentQty === item.targetQty;
+
+  // Match open claims chronologically (oldest first)
+  const matchingPendingLogs = state.logs
+    .filter(
+      (log) =>
+        log.vanId === item.vanId &&
+        log.partId === item.id &&
+        log.type === 'CONSUME' &&
+        log.status === 'PENDING_CLAIM'
+    )
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+  const closedLogIds = new Set<string>();
+  const referencedClaims: TransactionLog[] = [];
+
+  if (reachedPar) {
+    for (const log of matchingPendingLogs) {
+      closedLogIds.add(log.id);
+      referencedClaims.push(log);
+    }
+  } else {
+    let remainingUnits = actualRestockQty;
+    for (const log of matchingPendingLogs) {
+      if (remainingUnits <= 0) break;
+      if (log.qty <= remainingUnits) {
+        closedLogIds.add(log.id);
+        referencedClaims.push(log);
+        remainingUnits -= log.qty;
+      } else {
+        // Strict FIFO: stop before jumping over an older unfulfilled claim
+        break;
+      }
+    }
+    // If a partial restock is smaller than the oldest claim, still cite the oldest open claim for audit context
+    if (referencedClaims.length === 0 && matchingPendingLogs[0]) {
+      referencedClaims.push(matchingPendingLogs[0]);
+    }
+  }
 
   const uniqueRefs = Array.from(
-    new Set(matchingPendingLogs.map((l) => l.customerRef).filter(Boolean))
+    new Set(referencedClaims.map((l) => l.customerRef).filter(Boolean))
   );
 
+  const restockPrefix = reachedPar ? 'Restock for' : 'Partial restock for';
   const restockLog: TransactionLog = {
     id: createEntityId('log'),
     timestamp: new Date().toISOString(),
@@ -148,30 +235,24 @@ export function restockPartToParInState(
     partId: item.id,
     partName: item.partName,
     type: 'RESTOCK',
-    qty: deficit,
+    qty: actualRestockQty,
     customerRef:
       uniqueRefs.length > 0
-        ? `Restock for ${uniqueRefs.join(', ')}`
-        : 'Base Warehouse Par Fill',
+        ? `${restockPrefix} ${uniqueRefs.join(', ')}`
+        : reachedPar
+          ? 'Base Warehouse Par Fill'
+          : 'Partial Base Warehouse Restock',
     status: 'COMPLETED',
   };
 
   const updatedItem: VanInventoryItem = {
     ...item,
-    currentQty: item.targetQty,
+    currentQty: nextCurrentQty,
   };
 
-  const updatedLogs = state.logs.map((log) => {
-    if (
-      log.vanId === item.vanId &&
-      log.partId === item.id &&
-      log.type === 'CONSUME' &&
-      log.status === 'PENDING_CLAIM'
-    ) {
-      return { ...log, status: 'RESTOCKED' as const };
-    }
-    return log;
-  });
+  const updatedLogs = state.logs.map((log) =>
+    closedLogIds.has(log.id) ? { ...log, status: 'RESTOCKED' as const } : log
+  );
 
   const nextState: InventoryState = {
     ...state,
@@ -179,7 +260,17 @@ export function restockPartToParInState(
     logs: [restockLog, ...updatedLogs],
   };
 
-  return { nextState, restockedQty: deficit, item: updatedItem, van };
+  return {
+    nextState,
+    restockedQty: actualRestockQty,
+    closedClaimsCount: closedLogIds.size,
+    item: updatedItem,
+    van,
+  };
+}
+
+export function restockPartToParInState(state: InventoryState, partId: string) {
+  return restockPartInState(state, partId);
 }
 
 export function updateParLevelInState(
@@ -188,16 +279,38 @@ export function updateParLevelInState(
   newTargetQty: number
 ): InventoryState {
   const safeTarget = Math.max(1, Math.floor(newTargetQty));
+  let deficitCleared = false;
+
+  const nextInventory = state.inventory.map((item) => {
+    if (item.id !== partId) return item;
+    const nextCurrentQty = Math.min(item.currentQty, safeTarget);
+    if (safeTarget - nextCurrentQty === 0) {
+      deficitCleared = true;
+    }
+    return {
+      ...item,
+      targetQty: safeTarget,
+      currentQty: nextCurrentQty,
+    };
+  });
+
+  const nextLogs = deficitCleared
+    ? state.logs.map((log) => {
+        if (
+          log.partId === partId &&
+          log.type === 'CONSUME' &&
+          log.status === 'PENDING_CLAIM'
+        ) {
+          return { ...log, status: 'COMPLETED' as const };
+        }
+        return log;
+      })
+    : state.logs;
+
   return {
     ...state,
-    inventory: state.inventory.map((item) => {
-      if (item.id !== partId) return item;
-      return {
-        ...item,
-        targetQty: safeTarget,
-        currentQty: Math.min(item.currentQty, safeTarget),
-      };
-    }),
+    inventory: nextInventory,
+    logs: nextLogs,
   };
 }
 
@@ -211,15 +324,29 @@ export function addPartToVanInState(
     targetQty: number;
     currentQty: number;
   }
-): { nextState: InventoryState; item: VanInventoryItem } {
+): { nextState: InventoryState; item: VanInventoryItem } | null {
+  const normalizedSku = params.sku.trim().toUpperCase();
+  const normalizedName = params.partName.trim();
+  if (!normalizedSku || !normalizedName) return null;
+
+  const duplicateExists = state.inventory.some(
+    (item) =>
+      item.vanId === params.vanId &&
+      item.sku.trim().toUpperCase() === normalizedSku
+  );
+  if (duplicateExists) return null;
+
   const safeTarget = Math.max(1, Math.floor(params.targetQty));
-  const safeCurrent = Math.max(0, Math.min(safeTarget, Math.floor(params.currentQty)));
+  const safeCurrent = Math.max(
+    0,
+    Math.min(safeTarget, Math.floor(params.currentQty))
+  );
 
   const item: VanInventoryItem = {
     id: createEntityId('inv'),
     vanId: params.vanId,
-    partName: params.partName.trim(),
-    sku: params.sku.trim().toUpperCase(),
+    partName: normalizedName,
+    sku: normalizedSku,
     category: params.category.trim() || 'Electrical',
     targetQty: safeTarget,
     currentQty: safeCurrent,
@@ -238,18 +365,30 @@ export function removePartFromVanInState(
   state: InventoryState,
   partId: string
 ): InventoryState {
+  const nextLogs = state.logs.map((log) => {
+    if (
+      log.partId === partId &&
+      log.type === 'CONSUME' &&
+      log.status === 'PENDING_CLAIM'
+    ) {
+      return { ...log, status: 'COMPLETED' as const };
+    }
+    return log;
+  });
+
   return {
     ...state,
     inventory: state.inventory.filter((item) => item.id !== partId),
+    logs: nextLogs,
   };
 }
 
 export function addVanInState(
   state: InventoryState,
-  params: { name: string; plateNumber: string }
+  params: { id?: string; name: string; plateNumber: string }
 ): { nextState: InventoryState; van: Van } {
   const van: Van = {
-    id: createEntityId('van'),
+    id: params.id ?? createEntityId('van'),
     name: params.name.trim(),
     plateNumber: params.plateNumber.trim().toUpperCase(),
   };

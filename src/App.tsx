@@ -15,7 +15,8 @@ import {
   createEntityId,
   localInventoryRepository,
   removePartFromVanInState,
-  restockPartToParInState,
+  restockPartInState,
+  revertConsumeLogInState,
   updateParLevelInState,
 } from './services/inventoryStore';
 import {
@@ -49,16 +50,13 @@ export default function App() {
     }
   }, [state.vans, selectedVanId]);
 
-  const pushToast = useCallback(
-    (toast: Omit<ToastMessage, 'id'>) => {
-      const id = createEntityId('toast');
-      setToasts((prev) => [...prev.slice(-2), { ...toast, id }]);
-      window.setTimeout(() => {
-        setToasts((prev) => prev.filter((t) => t.id !== id));
-      }, 5000);
-    },
-    []
-  );
+  const pushToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
+    const id = createEntityId('toast');
+    setToasts((prev) => [...prev.slice(-2), { ...toast, id }]);
+    window.setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  }, []);
 
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -75,34 +73,75 @@ export default function App() {
       partId: string;
       qty: number;
       customerRef: string;
-    }): boolean => {
-      const result = consumePartInState(state, params);
-      if (!result) return false;
+    }) => {
+      let toastQueued = false;
+      setState((prev) => {
+        const result = consumePartInState(prev, params);
+        if (!result) return prev;
 
-      setState(result.nextState);
-      pushToast({
-        tone: 'success',
-        title: `Recorded! Claim ${params.qty}x ${result.item.partName} from Admin when back at base.`,
-        description: `Logged for ${result.log.customerRef} · ${result.log.vanName}`,
+        if (!toastQueued) {
+          toastQueued = true;
+          queueMicrotask(() => {
+            pushToast({
+              tone: 'success',
+              title: `Recorded! Claim ${params.qty}x ${result.item.partName} from Admin when back at base.`,
+              description: `Logged for ${result.log.customerRef} · ${result.log.vanName}`,
+            });
+          });
+        }
+        return result.nextState;
       });
-      return true;
     },
-    [state, pushToast]
+    [pushToast]
+  );
+
+  const handleRevertConsumeLog = useCallback(
+    (logId: string) => {
+      let toastQueued = false;
+      setState((prev) => {
+        const result = revertConsumeLogInState(prev, logId);
+        if (!result) return prev;
+
+        if (!toastQueued) {
+          toastQueued = true;
+          queueMicrotask(() => {
+            pushToast({
+              tone: 'info',
+              title: `Reverted ${result.revertedLog.qty}x ${result.revertedLog.partName}`,
+              description: `Stock restored to ${result.revertedLog.vanName} and claim removed.`,
+            });
+          });
+        }
+        return result.nextState;
+      });
+    },
+    [pushToast]
   );
 
   const handleConfirmRestock = useCallback(
-    (partId: string) => {
-      const result = restockPartToParInState(state, partId);
-      if (!result) return;
+    (partId: string, restockQty?: number) => {
+      let toastQueued = false;
+      setState((prev) => {
+        const result = restockPartInState(prev, partId, restockQty);
+        if (!result) return prev;
 
-      setState(result.nextState);
-      pushToast({
-        tone: 'success',
-        title: `Restocked ${result.restockedQty}x ${result.item.partName} for ${result.van.name}`,
-        description: `Filled to full par (${result.item.currentQty} / ${result.item.targetQty}) and closed pending claims.`,
+        if (!toastQueued) {
+          toastQueued = true;
+          const reachedPar = result.item.currentQty === result.item.targetQty;
+          queueMicrotask(() => {
+            pushToast({
+              tone: 'success',
+              title: `Restocked ${result.restockedQty}x ${result.item.partName} for ${result.van.name}`,
+              description: reachedPar
+                ? `Filled to full par (${result.item.currentQty} / ${result.item.targetQty}) and closed pending claims.`
+                : `Partial fill applied (${result.item.currentQty} / ${result.item.targetQty} now in van).`,
+            });
+          });
+        }
+        return result.nextState;
       });
     },
-    [state, pushToast]
+    [pushToast]
   );
 
   const handleUpdateParLevel = useCallback(
@@ -121,46 +160,81 @@ export default function App() {
       targetQty: number;
       currentQty: number;
     }) => {
-      const result = addPartToVanInState(state, params);
-      setState(result.nextState);
-      const vanName =
-        state.vans.find((v) => v.id === params.vanId)?.name ?? 'van';
-      pushToast({
-        tone: 'info',
-        title: `Added ${result.item.partName} (${result.item.sku})`,
-        description: `Assigned to ${vanName} with par level ${result.item.targetQty}.`,
+      let toastQueued = false;
+      setState((prev) => {
+        const result = addPartToVanInState(prev, params);
+        if (!result) return prev;
+
+        const vanName =
+          prev.vans.find((v) => v.id === params.vanId)?.name ?? 'van';
+
+        if (!toastQueued) {
+          toastQueued = true;
+          queueMicrotask(() => {
+            pushToast({
+              tone: 'info',
+              title: `Added ${result.item.partName} (${result.item.sku})`,
+              description: `Assigned to ${vanName} with par level ${result.item.targetQty}.`,
+            });
+          });
+        }
+        return result.nextState;
       });
     },
-    [state, pushToast]
+    [pushToast]
   );
 
   const handleRemovePart = useCallback(
     (partId: string) => {
-      const target = state.inventory.find((i) => i.id === partId);
-      setState((prev) => removePartFromVanInState(prev, partId));
-      if (target) {
-        pushToast({
-          tone: 'info',
-          title: `Removed ${target.partName} (${target.sku})`,
-          description: 'Part removed from the van par list.',
-        });
-      }
+      let toastQueued = false;
+      setState((prev) => {
+        const target = prev.inventory.find((i) => i.id === partId);
+        if (!target) return prev;
+
+        if (!toastQueued) {
+          toastQueued = true;
+          queueMicrotask(() => {
+            pushToast({
+              tone: 'info',
+              title: `Removed ${target.partName} (${target.sku})`,
+              description:
+                'Part removed from the van par list and open claims resolved.',
+            });
+          });
+        }
+        return removePartFromVanInState(prev, partId);
+      });
     },
-    [state.inventory, pushToast]
+    [pushToast]
   );
 
   const handleAddVan = useCallback(
     (params: { name: string; plateNumber: string }): Van => {
-      const result = addVanInState(state, params);
-      setState(result.nextState);
-      pushToast({
-        tone: 'success',
-        title: `Registered ${result.van.name}`,
-        description: `Plate ${result.van.plateNumber} added to fleet monitoring.`,
+      const newVan: Van = {
+        id: createEntityId('van'),
+        name: params.name.trim(),
+        plateNumber: params.plateNumber.trim().toUpperCase(),
+      };
+
+      let toastQueued = false;
+      setState((prev) => {
+        const result = addVanInState(prev, newVan);
+        if (!toastQueued) {
+          toastQueued = true;
+          queueMicrotask(() => {
+            pushToast({
+              tone: 'success',
+              title: `Registered ${result.van.name}`,
+              description: `Plate ${result.van.plateNumber} added to fleet monitoring.`,
+            });
+          });
+        }
+        return result.nextState;
       });
-      return result.van;
+
+      return newVan;
     },
-    [state, pushToast]
+    [pushToast]
   );
 
   const handleResetDemoData = useCallback(() => {
@@ -205,7 +279,10 @@ export default function App() {
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Wrench className="hidden sm:block w-4 h-4 shrink-0" aria-hidden="true" />
+              <Wrench
+                className="hidden sm:block w-4 h-4 shrink-0"
+                aria-hidden="true"
+              />
               <span>
                 Technician<span className="hidden sm:inline"> View</span>
               </span>
@@ -220,7 +297,10 @@ export default function App() {
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <ShieldCheck className="hidden sm:block w-4 h-4 shrink-0" aria-hidden="true" />
+              <ShieldCheck
+                className="hidden sm:block w-4 h-4 shrink-0"
+                aria-hidden="true"
+              />
               <span>
                 Admin<span className="hidden sm:inline"> View</span>
               </span>
@@ -255,7 +335,9 @@ export default function App() {
             selectedVanId={selectedVanId}
             onSelectVan={setSelectedVanId}
             inventory={state.inventory}
+            logs={state.logs}
             onLogUsage={handleLogUsage}
+            onRevertConsumeLog={handleRevertConsumeLog}
           />
         ) : (
           <AdminView
